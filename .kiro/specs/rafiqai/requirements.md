@@ -1,131 +1,159 @@
-# RafiqAI — Requirements
+# Requirements Document
 
-## Context
+## Introduction
 
-RafiqAI reads a confusing household document (phone bill, medical bill/EOB, official-looking
-letter), checks it for scams, errors, and bad deals, then phones the user back and explains the
-findings conversationally in their preferred language.
+RafiqAI helps a caregiver understand a family member's confusing mobile-phone bill and then calls
+the family member so they can ask questions without installing an app.
 
-**Scope constraint:** hackathon build, 3 hours, localhost only, optimized for a 5-minute live demo.
-Anything not visible or narratable in 5 minutes is out of scope.
+The three-hour hackathon MVP uses one coherent story: Yusuf submits his mother Sarah's
+English-language phone bill. Sarah is more comfortable speaking Arabic. The voice agent begins in
+English and switches to Arabic if Sarah speaks Arabic or asks for Arabic.
 
-**Demo persona:** Yusuf Ali (34, Bay Area) manages paperwork for himself and his mother Sarah (68,
-limited English, Urdu speaker).
+### Scope
 
-## Non-Goals
+The MVP supports pasted text from one mobile-phone-bill scenario. Medical bills, government/scam
+letters, leases, warranties, image/PDF upload, OCR, extra recipients, persistence, authentication,
+deployment, transcript polling, and user-selected languages are out of scope.
 
-- Deployment, hosting, custom domains, HTTPS
-- Auth, signup, multi-tenancy, real user accounts
-- Persistent database (seed data is a JSON file; run history is in-memory)
-- Full implementation of Category 4 (Lease) and Category 5 (Warranty Denial)
-- Mobile-native app, responsive polish beyond "looks fine on the presenter's laptop"
+## Glossary
 
----
+- **Prepared fixture:** The seeded Sarah phone bill used in the hackathon demonstration.
+- **Live mode:** Analysis produced from current model responses.
+- **Verified demo fallback:** Clearly labelled, pre-verified output available only for the prepared fixture or explicit safe mode.
+- **Potential impact:** A conditional amount worth questioning, not guaranteed savings or a refund.
+- **Concurrent checks:** The independent anomaly, market, and plain-language model calls started together.
 
-## R1 — Document intake
+## Requirements
 
-**Story:** As Yusuf, I want to submit a document with minimal steps so a non-technical person could
-do the same.
+## Requirement 1: Focused bill intake
 
-Acceptance criteria:
+**User Story:** As Yusuf, I want to submit Sarah's phone bill with minimal setup so I can quickly see
+which changes are worth questioning.
 
-1. WHEN the app loads THEN the system SHALL display 5 category buttons: Bill, Medical, Government
-   Letter, Lease (Coming soon), Warranty Denial (Coming soon).
-2. WHEN the user selects Lease or Warranty Denial THEN the system SHALL show a "Coming soon" state
-   and SHALL NOT start a pipeline run.
-3. THE system SHALL accept input by either (a) pasted raw text or (b) uploaded image/PDF.
-4. THE pasted-text path SHALL be implemented and working before the upload path (OCR de-risking).
-5. THE system SHALL offer an optional free-text "what's your concern?" field, and SHALL NOT require it.
-6. THE system SHALL let the user pick a recipient (Self — Yusuf / Household member — Sarah) and a
-   callback language (English / Urdu / Spanish).
-7. IF no document input is provided (neither text nor file) THEN the system SHALL block submission
-   with an inline validation message.
-8. THE system SHALL reject uploads over 10 MB and non-image/non-PDF MIME types with a clear message.
+### Acceptance Criteria
 
-## R2 — Extraction
+1. WHEN the app loads THEN it SHALL present a phone-bill analysis flow without a category picker.
+2. THE app SHALL accept pasted text and SHALL provide a one-click action that loads the prepared demo bill.
+3. THE prepared bill SHALL contain a $58 base service, a $9 Premium Network Access Fee, a $15
+   device-protection add-on, and an $82 total.
+4. IF the text field is empty THEN submission SHALL be blocked with an inline message.
+5. THE app SHALL identify Sarah as the bill recipient and outbound-call recipient.
+6. THE app SHALL NOT display a language selector.
 
-**Story:** As the pipeline, I need a structured view of the document before any analysis.
+## Requirement 2: Structured extraction
 
-1. WHEN input is a file THEN the system SHALL extract structure using a vision-capable model.
-2. WHEN input is pasted text THEN the system SHALL pass the text through to the same extraction
-   prompt with no vision call.
-3. THE extraction output SHALL be JSON containing: sender/vendor, addressee, total amount,
-   line items (label + amount), key dates, and any codes/clauses found.
-4. IF extraction returns unparseable output THEN the system SHALL retry once, and on second failure
-   SHALL surface a readable error and stop the run.
+**User Story:** As the analysis pipeline, I need a normalized view of the bill so each independent
+check evaluates the same facts.
 
-## R3 — Multi-agent analysis pipeline
+### Acceptance Criteria
 
-**Story:** As a judge, I want to see that this is genuinely multi-agent, not one mega-prompt.
+1. WHEN valid text is submitted THEN the system SHALL make one structured extraction model call.
+2. Extraction SHALL return vendor, account holder, billing period, total, line items, prior amount,
+   and exact evidence snippets from the source text.
+3. Model output SHALL be runtime-validated and normalized before downstream use.
+4. THE extraction call SHALL have an 8–12 second deadline.
+5. IF extraction fails or returns invalid output THEN the system SHALL use the transparent demo
+   fallback only when the input matches the prepared fixture or explicit safe mode is enabled.
+6. IF fallback is unavailable THEN the system SHALL return a readable error and stop analysis.
 
-1. THE system SHALL route directly to a category specialist based on the user's chosen category,
-   with no classification step.
-2. THE system SHALL run three cross-check agents as **concurrent** model calls: Anomaly/Scam
-   Detector, Market Comparator, Plain-Language Translator.
-3. THE Market Comparator SHALL call a `check_market_data(category, item)` tool backed by the seeded
-   reference dataset.
-4. THE system SHALL run a History/Trend agent comparing the current document against 2–3 seeded
-   prior documents for the same category and recipient.
-5. IF no history exists for that category+recipient THEN the system SHALL skip the trend step
-   without failing the run.
-6. THE Synthesis agent SHALL receive all specialist outputs plus the user's typed concern.
-7. IF the user typed a concern THEN synthesis SHALL address that concern first, ahead of generic
-   findings.
-8. THE Synthesis agent SHALL emit both (a) a prioritized findings list for screen and (b) a
-   natural-language briefing for the voice agent.
-9. IF any single cross-check agent fails THEN the run SHALL continue with the remaining outputs and
-   mark that agent as failed in the UI.
+## Requirement 3: Concurrent independent checks
 
-## R4 — Category checks
+**User Story:** As a judge, I want to see independent checks run concurrently so the architecture is
+more than one large prompt.
 
-1. **Bill:** promo-rate expiry / upcoming price jump, vague or junk fees, unneeded add-ons, price vs.
-   seeded market comparison.
-2. **Medical:** billed amount vs. seeded fair-price range by procedure code, plain-language
-   translation of denial/insurance jargon, whether the denial reason is commonly appealed successfully.
-3. **Government letter:** SHALL flag as fraudulent when urgency + gift-card/wire demand + arrest or
-   legal threat co-occur; SHALL state what action is actually required and by when; SHALL support a
-   document addressed to a household member other than the submitter.
+### Acceptance Criteria
 
-## R5 — Live pipeline visualization
+1. AFTER extraction succeeds THEN the system SHALL start three separate model calls before awaiting
+   any of them: anomaly check, market comparison, and plain-language explanation.
+2. THE system SHALL execute those calls concurrently with `Promise.allSettled` or equivalent.
+3. THE anomaly check SHALL identify new charges, unexpected increases, and internally inconsistent amounts.
+4. THE market check SHALL compare relevant items against clearly labelled synthetic seeded data.
+5. THE plain-language check SHALL explain vague fee names without claiming that a fee is illegal or removable.
+6. EACH check SHALL return exact evidence from the submitted bill for every proposed finding.
+7. IF one check fails or times out THEN the remaining checks SHALL continue and the failed stage SHALL
+   be visibly marked without failing the entire run.
+8. EACH model call SHALL have an 8–12 second deadline.
 
-**Story:** As a presenter, I need the audience to see the agents working.
+## Requirement 4: Deterministic trend, impact, and result merge
 
-1. WHILE a run is in progress THE UI SHALL show per-stage status (pending / running / done / failed)
-   for extraction, each of the 3 parallel cross-checks, trend, and synthesis.
-2. THE three cross-checks SHALL visibly enter the "running" state at the same time.
-3. THE system SHALL stream stage updates to the UI as they happen (no single blocking request).
-4. WHEN seeded history exists THE UI SHALL render a small trend chart of the prior amounts plus the
-   current one.
-5. THE UI SHALL display the prioritized findings as text after synthesis, each with a severity
-   (critical / warning / info) and a one-line explanation.
+**User Story:** As Yusuf, I want quantified, cautious findings so I know what to ask the carrier.
 
-## R6 — Voice callback
+### Acceptance Criteria
 
-**Story:** As Sarah, I want to be told what my letter means, out loud, in Urdu.
+1. THE system SHALL use seeded totals of $58, $67, and $82 for the prepared scenario.
+2. THE system SHALL calculate the increase from $58 to $82 locally and report it as approximately 41%.
+3. THE system SHALL calculate $24/month and up to $288/year locally from the two questioned charges.
+4. THE system SHALL describe those numbers as potential impact only, conditional on the charges being removable.
+5. THE system SHALL merge and sort findings locally without a separate synthesis model call.
+6. EACH finding SHALL contain severity, title, exact evidence, explanation, potential impact, suggested
+   action, and source check.
+7. THE English voice briefing SHALL be generated locally from normalized findings.
+8. Suggested actions SHALL favor verification: inspect plan terms, ask whether protection is optional,
+   request an explanation, and contact the carrier through a verified channel.
 
-1. WHEN synthesis completes THEN the system SHALL place an outbound call via Vapi to the phone number
-   configured for the selected recipient.
-2. THE voice agent's system prompt SHALL be the synthesis briefing plus the selected language.
-3. THE voice agent SHALL answer 1–2 natural follow-up questions by reasoning over the findings
-   rather than reading a fixed script.
-4. THE system SHALL only dial phone numbers present in the local config allow-list.
-5. WHEN the call ends THEN the UI SHALL display the call summary/transcript.
-6. IF the Vapi call fails or credentials are missing THEN the UI SHALL show the briefing text and a
-   "Retry call" button, and the run SHALL still be considered successful.
+## Requirement 5: Live and robust pipeline visualization
 
-## R7 — Demo reliability (treated as a first-class requirement)
+**User Story:** As a presenter, I want the audience to understand what is happening without waiting
+at a frozen screen.
 
-1. THE app SHALL run with a single command on localhost.
-2. THE system SHALL provide one-click "Load demo document" buttons that populate the paste-text field
-   with prepared examples for Bill, Medical, and Government Letter.
-3. IF any model call times out (>25 s) THEN the stage SHALL fail fast and the run SHALL continue.
-4. All secrets SHALL be read from `.env.local` server-side only and SHALL NOT be exposed to the
-   browser or committed.
-5. THE app SHALL be usable end-to-end with no network access to Vapi (findings-only mode), so a
-   telecom failure on stage does not kill the demo.
+### Acceptance Criteria
 
-## Security notes (acknowledged, deliberately minimal)
+1. WHILE analysis runs THEN the UI SHALL show pending, running, done, failed, or fallback status for
+   extraction and each concurrent check.
+2. THE three independent checks SHALL visibly enter running state together.
+3. THE analysis route SHALL stream newline-delimited JSON stage and result events.
+4. THE client SHALL preserve incomplete lines between network chunks and parse only complete records.
+5. THE stream SHALL end with an explicit `complete` event.
+6. IF the connection closes early THEN any running stages SHALL become failed while completed results remain visible.
+7. THE final UI SHALL emphasize exact evidence, potential monthly/annual impact, and one recommended next action.
 
-- No authentication: this is a localhost demo binding to `127.0.0.1`. Do not expose the port publicly.
-- Outbound calling is an abusable capability; the allow-list in R6.4 is the mitigation.
-- Uploaded documents are held in memory for the request and not written to disk.
+## Requirement 6: Controlled bilingual voice call
+
+**User Story:** As Sarah, I want to ask follow-up questions naturally and receive answers in the
+language I use during the call.
+
+### Acceptance Criteria
+
+1. AFTER findings appear THEN the UI SHALL show a manual Call Sarah action.
+2. THE system SHALL NOT place an outbound call automatically.
+3. THE call route SHALL accept a recipient ID, resolve the number server-side, and reject any
+   recipient not present in the local allow-list.
+4. THE voice agent SHALL greet Sarah in English.
+5. IF Sarah speaks Arabic or explicitly asks for Arabic THEN the agent SHALL respond and continue in Arabic.
+6. IF Sarah returns to English THEN the agent MAY switch back to English.
+7. THE configured speech recognition, model, speech generation, and voice SHALL support both English and Arabic.
+8. THE agent SHALL answer only from the supplied findings and SHALL not invent carrier policy or guaranteed savings.
+9. IF Vapi credentials are absent or the call fails THEN the UI SHALL display the English briefing
+   and a Retry action without changing the successful analysis result.
+10. Transcript polling SHALL NOT be required for the MVP.
+
+## Requirement 7: Honest demo fallback and reliability
+
+**User Story:** As a presenter, I want the demo to remain useful during API failure without misleading judges.
+
+### Acceptance Criteria
+
+1. THE prepared demo document SHALL have verified fallback extraction and findings.
+2. Fallback SHALL activate only when input matches the prepared fixture or explicit safe mode is enabled.
+3. WHEN fallback is used THEN a persistent **Verified demo fallback** banner SHALL be shown.
+4. THE system SHALL never label fallback output as live model output.
+5. Arbitrary submitted text SHALL NOT receive findings prepared for the demo fixture.
+6. THE analysis pipeline SHALL target an overall 25–30 second deadline.
+7. IF the overall deadline expires THEN completed findings SHALL remain visible and unfinished stages
+   SHALL be marked failed or fallback.
+8. THE product SHALL remain demoable without Vapi network access.
+
+## Requirement 8: Security, privacy, and claim boundaries
+
+**User Story:** As a presenter, I want the prototype's limitations to be explicit and safe.
+
+### Acceptance Criteria
+
+1. All API credentials and phone numbers SHALL remain server-side and SHALL not be serialized to the browser.
+2. Submitted text SHALL be held only for the request and SHALL not be written to local storage or disk.
+3. THE UI and README SHALL disclose that bill text is sent to the configured OpenAI provider and that
+   briefing/call content is sent to Vapi and its configured providers.
+4. Seeded comparison data SHALL be labelled synthetic.
+5. Findings SHALL use cautious wording such as “worth questioning” and “potential impact.”
+6. THE app SHALL not claim that a charge is fraudulent, illegal, guaranteed removable, or guaranteed refundable.
+7. THE localhost prototype SHALL not be exposed publicly and SHALL not be used with real sensitive bills.

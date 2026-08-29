@@ -1,114 +1,111 @@
-# RafiqAI — Tasks
+# Implementation Plan: RafiqAI
 
-6 tasks, 3-hour budget. Each task ends in a runnable, demoable state — if the clock runs out
-mid-plan, whatever is finished is still presentable. Do them in order.
+## Overview
 
-**Timeboxes are hard.** If a task overruns by 10 minutes, cut its optional items and move on.
+Six hard-timeboxed tasks total exactly 180 minutes. Each task must leave the app in a more demoable
+state. If a hard gate is missed, cut integration work rather than stealing time from rehearsal.
 
----
+## Tasks
 
-## Task 1 — Scaffold + data foundation (25 min)
+- [ ] 1. Dependency and telephony risk spike (15 minutes)
+  - Preserve the existing README and `.kiro` specifications while scaffolding the Next.js app.
+  - Select compatible Next.js, React, OpenAI, TypeScript, and Tailwind versions; save exact versions
+    and the lockfile rather than relying on unbounded `@latest` dependencies.
+  - Add server-only environment handling for `OPENAI_API_KEY`, `VAPI_API_KEY`, and
+    `VAPI_PHONE_NUMBER_ID`; confirm local env files are ignored.
+  - Verify one minimal structured OpenAI response using the intended model.
+  - Attempt one minimal Vapi call to Sarah's allow-listed number and verify the selected STT/TTS/voice
+    stack can understand and speak both English and Arabic.
+  - If the Vapi call or Arabic behavior is not proven by minute 15, keep voice optional and prioritize
+    the visible English briefing fallback.
+  - **Hard gate:** the app builds/starts, model access is known, and voice risk is classified.
 
-- [ ] `npx create-next-app@latest . --ts --tailwind --app --eslint --no-src-dir` (bind dev server to localhost)
-- [ ] `npm i openai` · `npm i -D vitest`
-- [ ] `.env.local` with `OPENAI_API_KEY`, `VAPI_API_KEY`, `VAPI_PHONE_NUMBER_ID`; confirm `.env*` is gitignored
-- [ ] `lib/types.ts` — all types from design §4
-- [ ] `data/seed.json` — household (real demo phone numbers), marketData, history from design §5
-- [ ] `data/demoDocs.ts` — 3 prepared document texts: padded phone bill, denied medical EOB, gift-card scam letter
-- [ ] `lib/openai.ts` — client + `jsonCall()` with JSON mode, 25 s timeout, 1 retry, typed `AgentError`
-- [ ] `lib/marketData.ts` + `lib/history.ts` with deviation math and the missing-history skip path
+- [ ] 2. Build a no-network golden path (30 minutes; cumulative 45)
+  - Create the prepared phone-bill text: $58 base service, $9 Premium Network Access Fee, $15 device
+    protection, and $82 total.
+  - Add seeded history for $58 → $67 → $82 and clearly label all comparison data as synthetic.
+  - Implement deterministic trend, percentage, monthly-impact, and annual-impact calculations.
+  - Add verified fallback extraction, findings, and English briefing for the prepared fixture.
+  - Build a minimal page with Load demo bill, Analyze, evidence-backed findings, and briefing.
+  - Display a prominent “Verified demo fallback” banner whenever fixture output is used.
+  - **Hard gate:** by minute 45, the prepared document works end-to-end with no external network.
 
-**Done when:** `npm run dev` serves the default page and `node --experimental-strip-types` /a scratch
-script can call `jsonCall()` successfully once.
+- [ ] 3. Add the streamed concurrent pipeline and evidence UI (45 minutes; cumulative 90)
+  - Define normalized extraction, finding, result, stage, and stream-event types.
+  - Implement runtime guards/defaults for all external model output.
+  - Implement NDJSON encoding plus a browser reader with carry-over buffering and final flush.
+  - Add pending/running/done/failed/fallback stage states and show the three checks in one row.
+  - Wire anomaly, market, and plain-language check contracts through `Promise.allSettled`; emit all
+    three running events before awaiting them.
+  - Merge and sort findings locally with exact evidence, explanation, potential impact, action,
+    severity, and source.
+  - Emit an explicit complete event and preserve partial results after a failed check or disconnect.
+  - **Hard gate:** the UI visibly demonstrates concurrency and produces useful evidence-backed output.
 
-_Covers R7.4, and the data half of R3.3/R3.4._
+- [ ] 4. Connect live OpenAI analysis (25 minutes; cumulative 115)
+  - Implement one structured extraction call and the three independent check calls using the model
+    verified in Task 1.
+  - Inject only relevant synthetic market rows into the market-check prompt; do not add web search or
+    a model tool-call loop.
+  - Apply 8–12 second deadlines and a 25–30 second overall analysis budget.
+  - On model failure, use verified fallback only for the prepared fixture or explicit safe mode and
+    label it in every affected event.
+  - Ensure arbitrary text cannot receive the prepared bill's fallback findings.
+  - **Hard gate:** complete one live run; if it is unstable, retain transparent safe mode for the demo.
 
----
+- [ ] 5. Add the manually triggered English/Arabic voice call (20 minutes; cumulative 135)
+  - Add a prominent Call Sarah button that appears only after analysis; never call automatically.
+  - Implement a server-side call route that accepts a recipient ID, resolves Sarah's number locally,
+    and rejects every non-allow-listed recipient.
+  - Configure the agent to greet in English, switch to Arabic when the callee speaks or requests
+    Arabic, remain in Arabic while the callee does, and optionally switch back with the callee.
+  - Keep the agent grounded in supplied findings and prohibit invented savings or carrier policies.
+  - On missing credentials, timeout, or provider error, show the English briefing and Retry without
+    changing the successful analysis state.
+  - Do not add transcript polling.
+  - **Hard gate:** either one bilingual call succeeds or the English briefing fallback is presentation-ready.
 
-## Task 2 — Pipeline: extraction → specialist → parallel cross-checks (35 min)
+- [ ] 6. Harden and rehearse only (45 minutes; cumulative 180)
+  - Stop adding features at minute 135.
+  - Run the production build/type-check and fix only blocking errors.
+  - Confirm credentials and Sarah's phone number never reach client bundles, stream events, or logs.
+  - Confirm no submitted document is persisted and the UI discloses OpenAI/Vapi data transfer.
+  - Rehearse the five-minute script once with live OpenAI and the live call: the agent greets in
+    English, Sarah asks in Arabic about the Premium Network Access Fee, and the agent answers in Arabic.
+  - Rehearse again with safe mode and Vapi unavailable; verify the fallback banner and English
+    briefing are obvious and the analysis still completes.
+  - Fix only failures exposed by those rehearsals, then repeat the affected path once.
+  - Set phone volume, disable call screening/silent mode, prevent laptop sleep, and frame the browser
+    so the three concurrent checks and findings remain visible.
+  - **Done when:** both online and degraded-mode demos complete coherently in under five minutes.
 
-- [ ] `lib/agents/extract.ts` — **text passthrough path first**, then the vision path (R2.4 retry included)
-- [ ] `lib/agents/specialists.ts` — bill / medical / government prompts implementing every check in R4, plus the dispatch map; lease + warranty entries throw `NotImplemented`
-- [ ] `lib/agents/crosschecks.ts` — `scamDetector`, `marketComparator` (tool-calling), `plainLanguage`
-- [ ] Deterministic government scam predicate in code (design §6), unit-tested
-- [ ] `lib/agents/trend.ts` and `lib/agents/synthesize.ts` — synthesis must put the user's concern answer first
-- [ ] `lib/stream.ts` — NDJSON writer
-- [ ] `app/api/analyze/route.ts` — orchestrator: stage events, `Promise.allSettled` for the three cross-checks (emit all three `running` before awaiting), `allSettled` so one failure doesn't kill the run
+## Task Dependency Graph
 
-**Done when:** `curl -N -F category=bill -F text=@- -F recipientId=yusuf localhost:3000/api/analyze`
-streams stage events and ends with a `synthesis` event containing findings.
+```json
+{
+  "waves": [
+    { "wave": 1, "tasks": ["1"], "description": "Dependency and telephony risk spike" },
+    { "wave": 2, "tasks": ["2"], "description": "No-network golden path" },
+    { "wave": 3, "tasks": ["3"], "description": "Streamed concurrent pipeline" },
+    { "wave": 4, "tasks": ["4"], "description": "Live OpenAI analysis" },
+    { "wave": 5, "tasks": ["5"], "description": "Manual voice call" },
+    { "wave": 6, "tasks": ["6"], "description": "Hardening and rehearsals" }
+  ]
+}
+```
 
-_Covers R2, R3, R4._
+Tasks are intentionally sequential so every hard gate leaves a presentable fallback path.
 
----
+## Notes
 
-## Task 3 — UI: intake + live pipeline + findings (40 min)
+### Cut Rules
 
-- [ ] `CategoryPicker` — 5 buttons, Lease/Warranty rendered but disabled with a visible "Coming soon" badge
-- [ ] `DocumentInput` — paste textarea, 3 "Load demo document" buttons, file input (≤10 MB, image/PDF only), inline validation when both inputs are empty
-- [ ] `RecipientPicker` — Self (Yusuf) / Mom (Sarah) + language select (English / Urdu / Spanish)
-- [ ] `PipelineView` — stage cards with pending/running/done/failed/skipped states; the three cross-checks in one horizontal row so simultaneity is obvious on screen
-- [ ] `page.tsx` — POST FormData, read the streamed NDJSON with a `fetch` body reader, reduce events into state
-- [ ] `FindingsList` — severity colour, agent-source badge, ordered critical → info
-- [ ] `TrendChart` — inline SVG sparkline, renders only when the trend event arrives
+If any hard gate is missed, cut in this order:
 
-**Done when:** a full bill run and a full government-letter run both complete visually in the browser,
-including the trend chart and findings. This is the demo's minimum viable state.
+1. Decorative animation and chart polish
+2. Live model-generated market wording; retain seeded local comparison and label it
+3. Live model-generated plain-language wording; retain verified fallback wording
+4. Live voice; retain the English briefing and explain the designed language-switch behavior
 
-_Covers R1, R5._
-
----
-
-## Task 4 — Voice callback (30 min)
-
-- [ ] `lib/vapi.ts` — `placeCall({ phone, briefing, language })` against `POST /call`, transient assistant, per-language voice + greeting
-- [ ] `app/api/call/route.ts` — POST validates `recipientId` against the `household` allow-list (400 otherwise); GET polls call status + transcript
-- [ ] Orchestrator triggers the call after synthesis and emits the `call` event; failure is non-fatal
-- [ ] `CallPanel` — call status, 3 s transcript polling, and the fallback view (briefing text + Retry) when Vapi is unavailable
-- [ ] Verify the agent handles a live follow-up question ("what's a premium network access fee?") from the briefing context
-
-**Done when:** the phone rings, the agent explains findings in the selected language, answers one
-follow-up, and the transcript appears in the UI. Also verify with `VAPI_API_KEY` unset that the run
-still succeeds in findings-only mode.
-
-_Covers R6._
-
----
-
-## Task 5 — Tests + hardening (20 min)
-
-- [ ] Vitest unit tests: market-data lookup/deviation, scam predicate, history lookup + skip, stream writer
-- [ ] Kill-switch check: with the network to Vapi blocked, the whole flow still finishes (R7.5)
-- [ ] Confirm no secret is referenced from a client component; no uploaded file written to disk
-- [ ] Friendly error surface for extraction failure and for any single failed cross-check
-- [ ] `npm run build` clean, no type errors
-
-**Done when:** `npx vitest run` green and `npm run build` succeeds.
-
-_Covers R2.4, R3.9, R7.3–R7.5._
-
----
-
-## Task 6 — Demo rehearsal + README (20 min)
-
-- [ ] One full timed run-through of the design §9 choreography, out loud, with the phone on speaker
-- [ ] Fix whatever the rehearsal exposes — nothing else
-- [ ] README: one-liner, `.env.local` keys, `npm i && npm run dev`, the 5-minute demo script, and an honest note that Categories 4–5 are stubs
-- [ ] Pre-demo checklist taped to the top of the README
-
-**Done when:** the run-through lands under 5:00 with no unhandled error.
-
-_Covers R7.1, R7.2._
-
----
-
-## Cut list (in order, if time runs short)
-
-1. Vision/file upload path — paste-text alone demos fine (R1.4 exists for exactly this)
-2. Trend chart animation / styling polish
-3. Spanish language option (keep English + Urdu)
-4. Transcript polling — show the briefing text instead
-5. Task 5 tests — but never Task 6 rehearsal
-
-Never cut: the parallel cross-check visualization, the deterministic scam flag, or the outbound call.
-Those three are the pitch.
+Never cut the one-document narrative, visible concurrent checks, exact evidence, cautious potential
+impact, transparent fallback label, allow-list, or final rehearsals.

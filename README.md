@@ -1,128 +1,117 @@
 # RafiqAI
 
-**Upload a confusing document. Get a phone call explaining it in your language.**
+**Understand a confusing phone bill. Then get a phone call explaining what to question.**
 
-RafiqAI reads any household document — a phone bill, a medical bill, a scam-looking government
-letter — checks it for scams, errors, and bad deals through a pipeline of specialist AI agents, then
-calls you back and explains what it found in plain language, in the language you picked. Built for
-anyone who's ever stared at a bill and thought "wait, is this right?" — especially elderly and
-non-native-English-speaking family members, who get taken advantage of the most.
+RafiqAI helps caregivers protect family members from confusing household charges. Yusuf submits his
+mother Sarah's English-language mobile bill; RafiqAI identifies unusual changes, compares charges
+with seeded reference data, explains the evidence plainly, and can call Sarah so she can ask
+follow-up questions without installing an app.
 
-Status: hackathon prototype. Localhost only, no auth, no database.
+> **Status:** The hackathon specification is ready; implementation is pending. The repository does
+> not yet contain a runnable application.
 
----
+## Three-hour MVP
 
-## Pre-demo checklist
+The MVP intentionally supports one excellent scenario rather than several incomplete categories:
 
-Run this list before presenting. In order.
+- Pasted text from one prepared mobile-phone bill
+- One structured extraction call
+- Three genuine concurrent checks: anomaly, market comparison, and plain-language explanation
+- Local trend and potential-impact calculations
+- Evidence-backed findings and an English briefing
+- A manually triggered Vapi call to an allow-listed recipient
+- Transparent fallback modes for failed model or telephony services
 
-- [ ] `.env.local` populated with all three keys
-- [ ] `npm run dev` up, page loads clean
-- [ ] All three "Load demo document" buttons verified
-- [ ] One full practice run completed end-to-end
-- [ ] Phone **off silent**, on speaker, volume up
-- [ ] Browser zoom set so every pipeline stage card fits on screen at once
+Medical bills, government/scam letters, leases, warranties, uploads, OCR, and additional recipients
+are roadmap items, not implemented MVP features.
 
----
+## Golden demo scenario
 
-## Setup
+Sarah's base mobile service costs **$58**. A **$9 Premium Network Access Fee** appears the next month,
+then a **$15 device-protection add-on** appears after that:
 
-Requires Node 20+.
+| Period | Total | Change |
+|---|---:|---|
+| June | $58 | Base service |
+| July | $67 | $9 access fee added |
+| August | $82 | $15 protection add-on added |
 
-```bash
-npm install
-cp .env.example .env.local   # then fill in the values below
-npm run dev                  # http://localhost:3000
+RafiqAI describes the $24/month as **charges worth questioning**, not guaranteed savings. If both
+charges prove removable, the potential impact is **up to $288/year**.
+
+## How analysis works
+
+```text
+Pasted bill
+  → structured extraction
+  → three concurrent checks
+      • anomaly and unexpected-change detection
+      • comparison with synthetic seeded reference data
+      • plain-language explanation
+  → local trend and potential-impact calculation
+  → evidence-backed findings and English briefing
+  → optional manual call to Sarah
 ```
 
-`.env.local` (server-side only, never exposed to the browser, gitignored):
+Each finding shows the exact bill text that supports it, what it may mean, its potential impact, and
+a safe next step. The three checks are separate concurrent model calls; trend math and result merging
+are deterministic local code.
 
-```
-OPENAI_API_KEY=
-VAPI_API_KEY=
-VAPI_PHONE_NUMBER_ID=
-```
+## Voice behavior
 
-Demo phone numbers live in `data/seed.json` under `household`. That list doubles as the outbound-dial
-allow-list — `/api/call` refuses any number not in it.
+The voice agent starts every call in English. If Sarah speaks Arabic or asks to continue in Arabic,
+the agent switches to Arabic for subsequent responses. If she returns to English, it may switch back.
+The configured speech-to-text, model, text-to-speech, and voice must all support both languages.
 
-**Without `VAPI_API_KEY` the app still works.** It drops to findings-only mode: everything renders on
-screen and the voice briefing is shown as text. Useful when conference wifi eats your telephony.
+The MVP has no language selector. If Vapi is unavailable, RafiqAI displays the English briefing and a
+Retry button; analysis remains successful.
 
----
+## Demo reliability
 
-## How it works
+- Calling is manual, never automatic.
+- Sarah's phone number is stored server-side and is the only allowed outbound destination.
+- Model stages use short deadlines and return partial results when one concurrent check fails.
+- The prepared fixture has a verified fallback for explicit safe mode or model failure.
+- Fallback output is always labelled **Verified demo fallback** and is never presented as live AI.
+- The stream emits an explicit completion event, and the client buffers partial NDJSON lines.
 
-```
-Document (pasted text or image/PDF)
-   ↓
-1  Extraction agent            →  structured JSON: sender, amounts, line items, dates, codes
-2  Category specialist         →  domain checks + check_market_data tool
-3  Three cross-checks IN PARALLEL
-      • Anomaly / scam detector
-      • Market comparator      (vs. seeded fair-price data)
-      • Plain-language translator
-4  History / trend agent       →  creeping increases across prior months
-5  Synthesis agent             →  prioritized findings + a voice briefing
-6  Voice delivery (Vapi)       →  outbound call, conversational, handles follow-up questions
-```
+## Privacy and safety
 
-Stage 3 is genuinely three concurrent model calls, not one prompt pretending to be three agents. The
-UI streams stage status live so you can watch them fire together.
+The prototype runs on localhost, has no authentication, and does not persist documents. However,
+document text is sent to the configured OpenAI provider, and briefing/call content is sent to Vapi
+and its configured speech/model providers. Do not use real sensitive bills during the demo.
 
-The government-letter fraud rule is enforced **in code**, not by the model: urgency + gift-card/wire
-demand + arrest or legal threat, co-occurring, is a hard-coded critical flag. Deterministic on stage.
+Seeded market comparisons are synthetic demonstration data. Findings are informational and may be
+wrong. They identify charges worth questioning; they do not guarantee refunds, savings, or fraud.
 
-## Document categories
-
-| Category | Status | Checks |
-|---|---|---|
-| Phone / Internet / Utility bill | Built | Promo expiry, junk fees, unneeded add-ons, price vs. market |
-| Medical bill / EOB | Built | Billed vs. fair-price range by code, jargon translation, appeal likelihood |
-| Government / official letter | Built | Scam-pattern detection, what action is actually required and by when |
-| Lease / rent renewal | **Stub** | Rent increase vs. local average, predatory clause flagging |
-| Warranty / claim denial | **Stub** | Plain-language denial reason, whether it's worth appealing |
-
-Categories 4 and 5 appear as real buttons but are deliberately unbuilt — scoped out to keep the three
-strongest categories genuinely working. They're marked "Coming soon" in the UI rather than faked.
-
-## 5-minute demo script
+## Five-minute demo
 
 | Time | Beat |
 |---|---|
-| 0:00 | Problem framing — Yusuf, 34, manages paperwork for his mother Sarah, 68, limited English |
-| 0:30 | Government letter for Sarah, Urdu callback → deterministic **fraudulent** flag |
-| 1:30 | Phone bill for Yusuf → parallel agents light up, trend chart shows $58 → $67 → $82, junk fee caught |
-| 3:00 | Answer the phone on speaker. Ask live: "what's a premium network access fee?" |
-| 4:15 | Transcript in UI, name the stubbed categories honestly, business model one-liner |
+| 0:00 | Introduce Yusuf helping Sarah understand an English phone bill |
+| 0:25 | Load the prepared bill and start analysis |
+| 0:45 | Show three checks running concurrently |
+| 1:20 | Reveal the 41% increase, exact fee evidence, and up-to-$288/year potential impact |
+| 2:10 | Click **Call Sarah**; the agent greets her in English |
+| 2:40 | Sarah asks in Arabic about the access fee; the agent answers in Arabic |
+| 4:00 | Explain allow-listing, synthetic data, graceful fallback, and privacy boundaries |
+| 4:35 | Close with the caregiver/no-app value proposition and roadmap |
 
-Business model (pitch only, not built): freemium — free occasional checks, subscription for ongoing
-household monitoring and history, optional take-rate on identified savings.
+## Planned implementation layout
 
----
-
-## Project layout
-
-```
-app/       page.tsx (single-screen UI), api/analyze (streaming orchestrator), api/call (Vapi)
-lib/       agents/ (extract, specialists, crosschecks, trend, synthesize), openai, vapi, stream
-components/ CategoryPicker, DocumentInput, RecipientPicker, PipelineView, FindingsList, TrendChart, CallPanel
-data/      seed.json (household, market data, history), demoDocs.ts
-.kiro/specs/rafiqai/  requirements.md, design.md, tasks.md
+```text
+app/                 page and API routes for analysis and calling
+lib/                 model calls, runtime validation, local bill math, merge, fallback, streaming
+components/          focused input, pipeline, findings, and call controls
+data/                prepared bill, synthetic history/reference data, allow-listed recipient
+.kiro/specs/rafiqai/ requirements, design, and implementation plan
 ```
 
-```bash
-npx vitest run    # unit tests: market math, scam predicate, history lookup, stream writer
-npm run build     # type check
-```
+Implementation order and hard timeboxes are in `.kiro/specs/rafiqai/tasks.md`.
 
-Tests cover pure logic only — prompt-heavy agents and UI are verified by the demo run-through.
-Rationale in `.kiro/specs/rafiqai/design.md` §8.
+## Roadmap
 
-## Known limitations
-
-- No authentication. Binds to localhost; don't expose the port.
-- No persistence — history is seeded JSON, runs are in-memory and lost on restart.
-- Outbound calling is restricted to the `data/seed.json` allow-list. Keep it that way.
-- Uploaded documents are held in memory for the request only, never written to disk.
-- Not medical, legal, or financial advice. Findings are AI-generated and can be wrong.
+After the hackathon MVP is reliable, the same caregiver-first interaction can expand to medical
+bills, suspicious official letters, lease renewals, warranties, uploads, and additional languages.
+Those extensions require sourced reference data, stronger privacy controls, and domain-specific
+safety review.
