@@ -1,224 +1,271 @@
 # RafiqAI — Design
 
-## 1. Stack decision
+## Overview
 
-**Next.js 15 (App Router) + TypeScript + Tailwind CSS, single process, `localhost:3000`.**
+RafiqAI is a three-hour hackathon prototype focused on one reliable story. Yusuf pastes his mother
+Sarah's English-language mobile bill. The system extracts its structure, runs three independent
+checks concurrently, calculates the trend and potential impact locally, and presents findings with
+exact evidence and a clear action. Yusuf may then manually trigger a Vapi call to Sarah.
 
-Why this and not something else, given a 3-hour budget:
+The call starts in English. If Sarah speaks Arabic or explicitly requests Arabic, the voice agent
+continues in Arabic; it may switch back when she returns to English. There is no language selector.
 
-| Concern | Decision | Rationale |
-|---|---|---|
-| Frontend + backend | One Next.js app | No CORS, no second process, no separate deploy story. Route handlers are the backend. |
-| Streaming progress | POST route handler returning a `ReadableStream` of NDJSON | Native to Next route handlers. Avoids WebSockets and avoids a run-store + second SSE connection. |
-| Styling | Tailwind only, no component library | `shadcn` CLI + registry costs 15+ minutes and adds files to review. Tailwind classes are enough. |
-| Chart | Hand-rolled inline SVG sparkline (~30 lines) | Faster than installing and learning Recharts; zero dependency risk. |
-| LLM | `openai` SDK | Vision, JSON mode, and tool calling in one client. |
-| Voice | Vapi REST (`POST /call`) via `fetch` | No SDK needed for outbound calls. |
-| Persistence | `data/seed.json` (read-only) + in-memory `Map` for run history | A DB buys nothing for a 5-minute demo. |
-| Tests | Vitest, unit tests on pure logic only | See §8. Do not chase 80% coverage here. |
+The prepared bill moves from $58 to $67 to $82 through a $9 Premium Network Access Fee followed by a
+$15 device-protection add-on. The product calls these charges worth questioning and presents
+$24/month or $288/year only as potential impact, never guaranteed savings.
 
-Node 20+. Package manager: npm.
+## Architecture
 
-## 2. Architecture
-
-```
-Browser (app/page.tsx)
-  │  POST /api/analyze  (FormData: category, text?, file?, concern?, recipientId, language)
+```text
+Browser
+  │ POST /api/analyze { text }
   ▼
-Route handler  ──── streams NDJSON events ────▶  Browser updates stage cards live
-  │
-  ├─ Stage 1  extract()                 gpt-4o (vision) | text passthrough → JSON
-  ├─ Stage 2  specialist(category)      category-specific prompt + check_market_data tool
-  ├─ Stage 3  Promise.allSettled([      ← the "multi-agent moment", genuinely concurrent
-  │             scamDetector(),
-  │             marketComparator(),
-  │             plainLanguage() ])
-  ├─ Stage 4  trendAgent()              seeded prior docs; skipped if none
-  ├─ Stage 5  synthesize()              → { findings[], briefing }
-  └─ Stage 6  POST /api/call            Vapi outbound; non-blocking, failure is non-fatal
+NDJSON route handler
+  ├─ extract(text)                         one structured model call
+  ├─ Promise.allSettled([
+  │    anomalyCheck(extraction),           model call
+  │    marketCheck(extraction, seedData),  model call
+  │    plainLanguageCheck(extraction)      model call
+  │  ])                                   genuinely concurrent
+  ├─ calculateTrendAndImpact()             local deterministic logic
+  ├─ mergeFindingsAndBriefing()            local deterministic logic
+  └─ complete event
+
+Browser
+  │ user clicks “Call Sarah”
+  ▼
+POST /api/call → allow-list validation → Vapi outbound call
 ```
 
-Every stage emits `{type:"stage", id, status}` before and after it runs. Stage 3 emits three
-`running` events before awaiting, so all three cards light up simultaneously on screen.
+The analysis and call lifecycles are separate. Analysis never places a call automatically.
 
-## 3. File layout
+### Stack Decisions
 
+- Next.js App Router, TypeScript, and Tailwind in one localhost process
+- OpenAI SDK with one environment-configurable text model
+- POST response streamed as NDJSON; no WebSockets or second SSE connection
+- Direct Vapi REST calls; no Vapi SDK
+- Read-only seeded JSON and deterministic local calculations; no database
+- Inline CSS/SVG only where needed; no chart or component library
+- Exact dependency versions and a lockfile recorded during the dependency spike
+
+## Components and Interfaces
+
+### `app/page.tsx`
+
+Owns the prepared-document loader, paste input, analysis action, buffered NDJSON reader, stage state,
+findings view, English briefing, and manual Call Sarah action. It does not receive phone numbers or
+provider credentials.
+
+### `app/api/analyze/route.ts`
+
+Accepts JSON `{ text: string }`. It validates input, streams stage events, performs extraction, emits
+all three concurrent `running` events before awaiting `Promise.allSettled`, runs local calculations,
+and emits `result` followed by `complete`. It has an overall target budget of 25–30 seconds.
+
+### Analysis modules
+
+- `extract.ts`: structured extraction with runtime validation and normalization
+- `checks.ts`: independent anomaly, market, and plain-language model calls
+- `billMath.ts`: deterministic trend, percentage, monthly, and annual calculations
+- `merge.ts`: de-duplicates and sorts findings, then builds the English briefing
+- `fallback.ts`: verified outputs keyed to the normalized prepared fixture
+- `stream.ts`: NDJSON event encoder
+
+Prompts require concise JSON and exact evidence copied from the bill. Market reference rows are
+injected from local synthetic seed data; no web search or fragile tool-call loop is required.
+
+### `POST /api/call`
+
+Accepts `{ recipientId: "sarah", briefing: string }`. The route resolves the phone number from
+server-side seed data, rejects unknown recipients, and calls Vapi. It never accepts a destination
+number from the browser.
+
+The transient voice-agent instruction is conceptually:
+
+```text
+Begin in English. Explain only the supplied phone-bill findings.
+If the callee speaks Arabic or explicitly asks for Arabic, respond in Arabic and continue in Arabic.
+If the callee returns to English, you may switch back. Never invent charges, savings, or carrier policy.
+When uncertain, recommend contacting the carrier through a verified number.
 ```
-app/
-  layout.tsx
-  page.tsx                    # single-screen UI
-  api/analyze/route.ts        # streaming orchestrator
-  api/call/route.ts           # Vapi outbound + transcript fetch
-components/
-  CategoryPicker.tsx
-  DocumentInput.tsx           # paste textarea + demo loaders + file input
-  RecipientPicker.tsx         # recipient + language selects
-  PipelineView.tsx            # stage cards, parallel row for stage 3
-  FindingsList.tsx
-  TrendChart.tsx              # inline SVG
-  CallPanel.tsx               # call status + transcript
-lib/
-  types.ts                    # shared types (§4)
-  openai.ts                   # client + jsonCall() helper w/ retry + 25s timeout
-  agents/extract.ts
-  agents/specialists.ts       # 3 category prompts + dispatch map
-  agents/crosschecks.ts       # scam / market / plain-language
-  agents/trend.ts
-  agents/synthesize.ts
-  marketData.ts               # check_market_data tool impl
-  history.ts                  # seeded prior docs lookup
-  vapi.ts
-  stream.ts                   # NDJSON event writer
-data/
-  seed.json                   # household, marketData, history
-  demoDocs.ts                 # 3 prepared demo document texts
-```
 
-Keep every file under ~200 lines. Prompts live as exported string constants next to their agent.
+The first message is a short English greeting. The selected STT, model, TTS, and voice configuration
+must support both English and Arabic before the live call is considered demo-ready. No transcript
+polling is included in the MVP.
 
-## 4. Data model (`lib/types.ts`)
+### Seed data
+
+The seed file contains only:
+
+- Sarah's server-side allow-listed number
+- Synthetic history: June $58, July $67, August $82
+- Synthetic reference notes for the access fee and device protection
+- A clear `synthetic: true` marker consumed by the UI
+
+### Demo fallback
+
+A normalized hash or exact fixture identifier selects the verified fallback. Fallback may run only
+when the input is the prepared document or `DEMO_SAFE_MODE` is explicitly enabled. Every fallback
+stage and final result carries `mode: "fallback"`; the UI renders a persistent **Verified demo
+fallback** banner. Arbitrary user text never receives prepared fixture findings.
+
+## Data Models
 
 ```ts
-export type Category = 'bill' | 'medical' | 'government' | 'lease' | 'warranty';
-export type Language = 'en' | 'ur' | 'es';
-export type Severity = 'critical' | 'warning' | 'info';
-export type StageId =
-  | 'extract' | 'specialist' | 'scam' | 'market' | 'plain' | 'trend' | 'synthesis' | 'call';
-export type StageStatus = 'pending' | 'running' | 'done' | 'failed' | 'skipped';
+export type StageId = 'extract' | 'anomaly' | 'market' | 'plain' | 'trend' | 'merge';
+export type StageStatus = 'pending' | 'running' | 'done' | 'failed' | 'fallback';
+export type Severity = 'warning' | 'info';
+export type AnalysisMode = 'live' | 'fallback' | 'partial';
 
-export interface LineItem { label: string; amount: number | null; note?: string }
+export interface LineItem {
+  label: string;
+  amount: number | null;
+  evidence: string;
+}
 
 export interface Extraction {
-  sender: string | null;
-  addressee: string | null;
-  totalAmount: number | null;
+  vendor: string | null;
+  accountHolder: string | null;
+  billingPeriod: string | null;
+  total: number | null;
+  priorAmount: number | null;
   lineItems: LineItem[];
-  keyDates: { label: string; date: string }[];
-  codes: string[];        // CPT-style codes, denial codes, statute refs
-  clauses: string[];      // contract/legal clauses worth flagging
-  rawSummary: string;
 }
 
 export interface Finding {
+  id: string;
   severity: Severity;
-  title: string;          // one line, plain language
-  detail: string;         // 1–2 sentences
-  source: StageId;        // which agent produced it — shown as a badge in the demo
+  title: string;
+  evidence: string;
+  explanation: string;
+  potentialImpact: string | null;
+  action: string;
+  source: 'anomaly' | 'market' | 'plain' | 'trend';
 }
 
-export interface Synthesis {
-  concernAnswer: string | null;   // present iff user typed a concern
-  findings: Finding[];            // ordered: critical → warning → info
-  briefing: string;               // context doc for the voice agent
+export interface AnalysisResult {
+  mode: AnalysisMode;
+  findings: Finding[];
+  trend: { label: string; amount: number }[];
+  potentialMonthlyImpact: number;
+  potentialAnnualImpact: number;
+  briefing: string;
+  syntheticComparisonData: true;
 }
 
 export type StreamEvent =
   | { type: 'stage'; id: StageId; status: StageStatus; note?: string }
-  | { type: 'extraction'; data: Extraction }
-  | { type: 'trend'; data: { label: string; amount: number }[] }
-  | { type: 'synthesis'; data: Synthesis }
-  | { type: 'call'; data: { callId: string | null; status: string; error?: string } }
-  | { type: 'error'; message: string };
+  | { type: 'result'; data: AnalysisResult }
+  | { type: 'error'; message: string; recoverable: boolean }
+  | { type: 'complete'; mode: AnalysisMode };
 ```
 
-Immutability: agents are pure `async (input) => output`; the orchestrator builds a new context
-object per stage rather than mutating a shared accumulator.
+The runtime validator rejects unknown severities/sources, clamps non-finite amounts to `null`, limits
+string and array sizes, and requires each finding to include evidence present in the submitted text.
 
-## 5. Seed data (`data/seed.json`)
+## Correctness Properties
 
-```json
-{
-  "household": [
-    { "id": "yusuf", "name": "Yusuf Ali", "phone": "+1XXXXXXXXXX", "relation": "self" },
-    { "id": "sarah", "name": "Sarah Ali", "phone": "+1XXXXXXXXXX", "relation": "mother" }
-  ],
-  "marketData": {
-    "bill": [
-      { "item": "unlimited talk+text+data, 2 lines", "fairRange": [70, 95], "unit": "USD/mo" },
-      { "item": "premium network access fee", "fairRange": [0, 0], "note": "junk fee; not a government charge" },
-      { "item": "device protection add-on", "fairRange": [0, 17] },
-      { "item": "home internet 300Mbps", "fairRange": [45, 70] }
-    ],
-    "medical": [
-      { "item": "99213 office visit, established patient", "fairRange": [90, 180] },
-      { "item": "80053 comprehensive metabolic panel", "fairRange": [15, 60] },
-      { "item": "71046 chest X-ray, 2 views", "fairRange": [45, 120] }
-    ],
-    "lease": [{ "item": "1BR Bay Area renewal increase", "fairRange": [2, 6], "unit": "percent" }]
-  },
-  "history": {
-    "bill:yusuf": [
-      { "label": "Jun", "amount": 58.0 },
-      { "label": "Jul", "amount": 67.0 },
-      { "label": "Aug", "amount": 82.0 }
-    ],
-    "medical:sarah": [
-      { "label": "Mar visit", "amount": 145.0 },
-      { "label": "Jun visit", "amount": 160.0 }
-    ]
-  }
-}
-```
+### Property 1: No silent fallback
 
-History key = `${category}:${recipientId}`. Missing key → stage 4 emits `skipped`.
+**Validates: Requirements 7.3, 7.4**
 
-Phone numbers double as the R6.4 allow-list: `api/call` refuses any number not in `household`.
+When `mode === "fallback"`, the persistent fallback banner is visible.
 
-## 6. Agent contracts
+### Property 2: Fixture isolation
 
-| Agent | Model | Output |
-|---|---|---|
-| `extract` | `gpt-4o` (vision) / `gpt-4o-mini` (text) | `Extraction`, JSON mode, 1 retry |
-| `specialist` | `gpt-4o-mini` + `check_market_data` tool | `Finding[]` |
-| `scamDetector` | `gpt-4o-mini` | `Finding[]` |
-| `marketComparator` | `gpt-4o-mini` + `check_market_data` tool | `Finding[]` |
-| `plainLanguage` | `gpt-4o-mini` | `{ glossary: {term, plain}[] }` |
-| `trend` | `gpt-4o-mini` | `Finding[]` + series for the chart |
-| `synthesize` | `gpt-4o` | `Synthesis` |
+**Validates: Requirements 7.2, 7.5**
 
-Government-letter scam rule is enforced in code, not left to the model: if the extraction/scam output
-indicates urgency AND (gift card OR wire transfer) AND (arrest OR legal threat), the orchestrator
-injects a hard-coded `critical` finding. Deterministic behavior for the demo's money moment.
+Fallback findings are returned only for the prepared normalized fixture or explicit safe mode.
 
-`jsonCall()` wraps every call with: `response_format: json_object`, 25 s `AbortSignal.timeout`,
-one retry on parse failure, and it throws a typed `AgentError` carrying the stage id.
+### Property 3: True concurrency
 
-## 7. Voice layer
+**Validates: Requirements 3.1, 3.2**
 
-`POST /api/call` body: `{ recipientId, language, briefing }`.
+All three check calls start and all three running events are emitted before results are awaited.
 
-1. Validate `recipientId` against `household` (reject otherwise, 400).
-2. `POST https://api.vapi.ai/call` with `phoneNumberId`, `customer.number`, and a transient
-   assistant: `model.messages[0].content = briefing + languageInstruction`,
-   `voice` chosen per language, `firstMessage` a short localized greeting.
-3. Return `callId`. UI polls `GET /api/call?id=` every 3 s for status + transcript.
-4. Missing `VAPI_*` env vars → return `{ callId: null, status: 'unavailable' }`; UI shows the briefing
-   text plus a Retry button (R6.6). The demo survives without telephony.
+### Property 4: Partial progress
 
-Env (`.env.local`, server-only, gitignored):
-`OPENAI_API_KEY`, `VAPI_API_KEY`, `VAPI_PHONE_NUMBER_ID`.
+**Validates: Requirements 3.7, 5.6**
 
-## 8. Testing posture (deliberate deviation, stated plainly)
+One rejected check cannot erase successful check outputs.
 
-The standing 80%-coverage rule is not achievable or useful inside a 3-hour build whose surface is
-mostly LLM prompts and UI. What gets tested with Vitest:
+### Property 5: Evidence grounding
 
-- `marketData.check_market_data` lookup + deviation math
-- the deterministic scam-rule predicate
-- `history` key lookup incl. the missing-history skip path
-- the NDJSON stream writer
+**Validates: Requirements 2.2, 3.6**
 
-Everything else is verified by running the demo script end-to-end (Task 6). No LLM calls in tests.
+Every model-generated finding contains evidence found verbatim in the submitted bill.
 
-## 9. Demo choreography (5 minutes)
+### Property 6: Deterministic math
+
+**Validates: Requirements 4.1, 4.2, 4.3**
+
+The local calculations produce `$82 - $58 = $24`, `$24 × 12 = $288`, and an increase of approximately 41%.
+
+### Property 7: Cautious claims
+
+**Validates: Requirements 4.4, 8.5, 8.6**
+
+The UI never converts potential impact into guaranteed savings.
+
+### Property 8: Call control
+
+**Validates: Requirements 6.1, 6.2, 6.3**
+
+No call occurs without a user action, and no browser-supplied phone number is dialed.
+
+### Property 9: Completion
+
+**Validates: Requirements 5.5**
+
+Every normally closed analysis stream emits exactly one complete event.
+
+### Property 10: Secret boundary
+
+**Validates: Requirements 8.1**
+
+Provider credentials and Sarah's number never enter client props, events, or logs.
+
+## Error Handling
+
+- Empty input returns HTTP 400 before opening the stream.
+- Extraction failure stops arbitrary-input analysis; prepared-fixture analysis may switch to labelled fallback.
+- Each concurrent check has an 8–12 second deadline and is isolated with `Promise.allSettled`.
+- Invalid model fields are normalized where safe; unusable outputs fail only their originating stage.
+- The route targets a 25–30 second overall budget and preserves completed findings on timeout.
+- The NDJSON client buffers incomplete records, ignores unknown event types, flushes the final buffer,
+  and marks still-running stages failed on premature close.
+- Missing Vapi configuration returns `unavailable`, not an analysis error.
+- Vapi timeout or rejection preserves the result and shows the English briefing plus Retry.
+- Provider error details are logged server-side without document text, secrets, or phone numbers; the
+  browser receives a short safe message.
+
+## Testing Strategy
+
+No automated test-suite dependency is added during the three-hour MVP. Validation focuses on the
+actual presentation paths:
+
+1. Run the production build/type-check.
+2. Rehearse the prepared bill with live model calls and a live Vapi call.
+3. Verify the agent greets in English, understands an Arabic question, and answers in Arabic.
+4. Rehearse with explicit safe mode and Vapi unavailable.
+5. Confirm the fallback banner is persistent and the English briefing remains usable.
+6. Confirm arbitrary input cannot receive prepared-fixture findings.
+7. Inspect browser payloads/logs for accidental credentials or phone numbers.
+8. Time both rehearsals and fix only failures that affect the five-minute demo.
+
+## Demo Choreography
 
 | Time | Beat |
 |---|---|
-| 0:00–0:30 | Problem framing: Yusuf + Sarah. |
-| 0:30–1:30 | Government letter for Sarah, Urdu callback → deterministic **fraudulent** flag. |
-| 1:30–3:00 | Phone bill for Yusuf → parallel agents light up, trend chart shows $58→$67→$82, junk fee flagged. |
-| 3:00–4:15 | Answer the phone on speaker; ask "what's a premium network access fee?" live. |
-| 4:15–5:00 | Show transcript in UI, name the stubbed categories honestly, business model one-liner. |
+| 0:00–0:25 | Yusuf helps Sarah understand an English bill without making her install an app |
+| 0:25–0:45 | Load the prepared bill and start analysis |
+| 0:45–1:20 | Three independent checks visibly run together |
+| 1:20–2:10 | Show exact evidence, the 41% increase, and up-to-$288/year potential impact |
+| 2:10–2:40 | Yusuf clicks Call Sarah; the agent greets in English |
+| 2:40–4:00 | Sarah asks in Arabic about the access fee; the agent answers in Arabic |
+| 4:00–4:35 | Show synthetic-data, allow-list, privacy, and fallback boundaries |
+| 4:35–5:00 | Close on the caregiver/no-app value and roadmap |
 
-Pre-demo checklist: `.env.local` populated, phone off silent, demo doc buttons verified, one full
-practice run completed, browser zoom set so all stage cards fit on screen.
+The presenter keeps a completed result available in another tab, keeps the phone beside the laptop
+with call screening disabled, and never starts a second analysis or second call during the demo.

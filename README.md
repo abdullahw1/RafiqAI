@@ -7,8 +7,36 @@ mother Sarah's English-language mobile bill; RafiqAI identifies unusual changes,
 with seeded reference data, explains the evidence plainly, and can call Sarah so she can ask
 follow-up questions without installing an app.
 
-> **Status:** The hackathon specification is ready; implementation is pending. The repository does
-> not yet contain a runnable application.
+> **Status:** MVP implemented. The app builds, runs, and completes the full analysis flow offline in
+> safe mode. Live model analysis and voice calling activate when credentials are supplied.
+
+## Running it
+
+```bash
+npm install
+cp .env.example .env.local   # fill in what you have; all keys are optional
+npm run dev                  # http://localhost:3000
+```
+
+With no keys at all, the prepared demo bill still runs end-to-end through the verified fallback and
+is labelled as such. Set `DEMO_SAFE_MODE=true` to force the fallback with zero network calls.
+
+| Variable | Effect when omitted |
+|---|---|
+| `OPENAI_API_KEY` | Prepared bill uses verified fallback; arbitrary text returns a readable error |
+| `VAPI_API_KEY`, `VAPI_PHONE_NUMBER_ID` | Call returns `unavailable`; the English briefing is shown |
+| `SARAH_PHONE_NUMBER` | Same as above; no outbound destination is resolvable |
+
+`OPENAI_API_KEY` accepts either an OpenAI key or an Anthropic `sk-ant-` key. An Anthropic key is
+routed to Anthropic's OpenAI-compatible chat-completions endpoint and defaults to
+`claude-sonnet-4-5`; override the model with `OPENAI_MODEL`. `SARAH_PHONE_NUMBER` is normalized to
+E.164, so `(408) 555-0311` and `+14085550311` both work.
+
+```bash
+npm test        # 26 unit tests over the deterministic math, merge, validation, and fallback
+npm run build   # production build and type-check
+```
+
 
 ## Three-hour MVP
 
@@ -97,14 +125,17 @@ wrong. They identify charges worth questioning; they do not guarantee refunds, s
 | 4:00 | Explain allow-listing, synthetic data, graceful fallback, and privacy boundaries |
 | 4:35 | Close with the caregiver/no-app value proposition and roadmap |
 
-## Planned implementation layout
+## Implementation layout
 
 ```text
-app/                 page and API routes for analysis and calling
-lib/                 model calls, runtime validation, local bill math, merge, fallback, streaming
-components/          focused input, pipeline, findings, and call controls
-data/                prepared bill, synthetic history/reference data, allow-listed recipient
-.kiro/specs/rafiqai/ requirements, design, and implementation plan
+app/page.tsx              paste input, buffered NDJSON reader, stage row, findings, briefing
+app/api/analyze/route.ts  NDJSON pipeline: extraction → 3 concurrent checks → local math → merge
+app/api/call/route.ts     allow-list validation then one Vapi outbound call
+lib/                      openai, extract, checks, billMath, merge, validate, fallback, stream, vapi
+components/               PipelineView, FindingsView, CallControls
+data/                     prepared bill, synthetic seed data, server-only recipient allow-list
+tests/                    unit tests for the deterministic and safety-critical local logic
+.kiro/specs/rafiqai/      requirements, design, and implementation plan
 ```
 
 Implementation order and hard timeboxes are in `.kiro/specs/rafiqai/tasks.md`.

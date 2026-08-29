@@ -7,7 +7,7 @@ state. If a hard gate is missed, cut integration work rather than stealing time 
 
 ## Tasks
 
-- [ ] 1. Dependency and telephony risk spike (15 minutes)
+- [x] 1. Dependency and telephony risk spike (15 minutes)
   - Preserve the existing README and `.kiro` specifications while scaffolding the Next.js app.
   - Select compatible Next.js, React, OpenAI, TypeScript, and Tailwind versions; save exact versions
     and the lockfile rather than relying on unbounded `@latest` dependencies.
@@ -20,7 +20,7 @@ state. If a hard gate is missed, cut integration work rather than stealing time 
     the visible English briefing fallback.
   - **Hard gate:** the app builds/starts, model access is known, and voice risk is classified.
 
-- [ ] 2. Build a no-network golden path (30 minutes; cumulative 45)
+- [x] 2. Build a no-network golden path (30 minutes; cumulative 45)
   - Create the prepared phone-bill text: $58 base service, $9 Premium Network Access Fee, $15 device
     protection, and $82 total.
   - Add seeded history for $58 → $67 → $82 and clearly label all comparison data as synthetic.
@@ -30,7 +30,7 @@ state. If a hard gate is missed, cut integration work rather than stealing time 
   - Display a prominent “Verified demo fallback” banner whenever fixture output is used.
   - **Hard gate:** by minute 45, the prepared document works end-to-end with no external network.
 
-- [ ] 3. Add the streamed concurrent pipeline and evidence UI (45 minutes; cumulative 90)
+- [x] 3. Add the streamed concurrent pipeline and evidence UI (45 minutes; cumulative 90)
   - Define normalized extraction, finding, result, stage, and stream-event types.
   - Implement runtime guards/defaults for all external model output.
   - Implement NDJSON encoding plus a browser reader with carry-over buffering and final flush.
@@ -42,7 +42,7 @@ state. If a hard gate is missed, cut integration work rather than stealing time 
   - Emit an explicit complete event and preserve partial results after a failed check or disconnect.
   - **Hard gate:** the UI visibly demonstrates concurrency and produces useful evidence-backed output.
 
-- [ ] 4. Connect live OpenAI analysis (25 minutes; cumulative 115)
+- [x] 4. Connect live OpenAI analysis (25 minutes; cumulative 115)
   - Implement one structured extraction call and the three independent check calls using the model
     verified in Task 1.
   - Inject only relevant synthetic market rows into the market-check prompt; do not add web search or
@@ -53,7 +53,7 @@ state. If a hard gate is missed, cut integration work rather than stealing time 
   - Ensure arbitrary text cannot receive the prepared bill's fallback findings.
   - **Hard gate:** complete one live run; if it is unstable, retain transparent safe mode for the demo.
 
-- [ ] 5. Add the manually triggered English/Arabic voice call (20 minutes; cumulative 135)
+- [x] 5. Add the manually triggered English/Arabic voice call (20 minutes; cumulative 135)
   - Add a prominent Call Sarah button that appears only after analysis; never call automatically.
   - Implement a server-side call route that accepts a recipient ID, resolves Sarah's number locally,
     and rejects every non-allow-listed recipient.
@@ -65,7 +65,7 @@ state. If a hard gate is missed, cut integration work rather than stealing time 
   - Do not add transcript polling.
   - **Hard gate:** either one bilingual call succeeds or the English briefing fallback is presentation-ready.
 
-- [ ] 6. Harden and rehearse only (45 minutes; cumulative 180)
+- [x] 6. Harden and rehearse only (45 minutes; cumulative 180)
   - Stop adding features at minute 135.
   - Run the production build/type-check and fix only blocking errors.
   - Confirm credentials and Sarah's phone number never reach client bundles, stream events, or logs.
