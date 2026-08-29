@@ -2,102 +2,105 @@ import 'server-only';
 import { selectMarketRows } from '@/data/seed';
 import { callJsonModel, STAGE_DEADLINE_MS, withDeadline } from './openai';
 import { fenceUntrusted, UNTRUSTED_TEXT_NOTICE } from './prompt';
-import type { Extraction, Finding } from './types';
+import type { BillType, Extraction, Finding } from './types';
 import { parseJsonObject, validateFindings } from './validate';
 
+const TYPE_TERMS: Record<BillType, string> = {
+  phone: 'Use phone-bill terminology such as carrier, plan, and add-on only when supported.',
+  insurance: 'Use insurance terminology; do not discuss phone carriers, phone plans, or switching savings.',
+  medical: 'Use medical-billing terminology; do not discuss phone carriers, phone plans, or switching savings.',
+  other: 'Use neutral provider terminology; do not assume this is a phone bill.',
+};
+
 const FINDING_SHAPE = `${UNTRUSTED_TEXT_NOTICE}
-Return ONLY a JSON object:
-{"findings":[{"severity":"warning"|"info","title":string,"evidence":string,"explanation":string,"potentialImpact":string|null,"action":string}]}
-Rules:
-- "evidence" MUST be copied verbatim from the BILL TEXT. Findings without verbatim evidence are discarded.
-- Never claim a charge is fraudulent, illegal, guaranteed removable, or guaranteed refundable.
-- Use cautious wording such as "worth questioning" and "potential impact".
-- At most 3 findings. Be concise.`;
+Return ONLY this JSON object: {"findings":[{"severity":"warning"|"info","title":string,"evidence":string,"explanation":string,"potentialImpact":string|null,"action":string}]}.
+Evidence MUST be copied verbatim from BILL TEXT. Never claim fraud, illegality, guaranteed removal, refund, or savings. At most 3 concise findings.`;
 
-const ANOMALY_SYSTEM = `You detect unexpected changes on one mobile-phone bill.
-Identify newly appearing charges, unexpected increases, and internally inconsistent amounts.
-${FINDING_SHAPE}`;
-
-const MARKET_SYSTEM = `You compare bill line items against a SYNTHETIC demonstration reference set.
-The reference rows are invented demo data, not sourced market pricing. Say so in the explanation.
-Report where a charge is unusual or ordinary relative to the reference rows.
-${FINDING_SHAPE}`;
-
-const PLAIN_SYSTEM = `You explain vague fee names on one mobile-phone bill in plain language for a
-non-expert reader. Explain what the wording does and does not say.
-Never state that a fee is illegal, improper, or guaranteed removable.
-${FINDING_SHAPE}`;
+function systemFor(check: 'anomaly' | 'market' | 'plain', billType: BillType): string {
+  const purpose = check === 'anomaly'
+    ? 'Detect unexpected changes and internally inconsistent amounts.'
+    : check === 'market'
+      ? billType === 'phone'
+        ? 'Compare phone line items only with the supplied SYNTHETIC demo references and label them invented.'
+        : 'Identify questions to ask about line items without market benchmarks; no phone comparisons are supplied or allowed.'
+      : 'Explain vague labels in plain language without adding unsupported conclusions.';
+  return `You review one declared ${billType} bill. ${TYPE_TERMS[billType]} ${purpose}\n${FINDING_SHAPE}`;
+}
 
 function extractionSummary(extraction: Extraction): string {
   const items = extraction.lineItems
     .map((item) => `- ${item.label}: ${item.amount ?? 'unknown'} | evidence: ${item.evidence}`)
     .join('\n');
-
-  return [
-    `vendor: ${extraction.vendor ?? 'unknown'}`,
-    `accountHolder: ${extraction.accountHolder ?? 'unknown'}`,
-    `billingPeriod: ${extraction.billingPeriod ?? 'unknown'}`,
-    `total: ${extraction.total ?? 'unknown'}`,
-    `priorAmount: ${extraction.priorAmount ?? 'unknown'}`,
-    `lineItems:\n${items}`,
-  ].join('\n');
+  const history = extraction.history
+    .map((point) => `- ${point.label}: ${point.amount} | evidence: ${point.evidence}`)
+    .join('\n');
+  return `vendor: ${extraction.vendor ?? 'unknown'}\naccountHolder: ${extraction.accountHolder ?? 'unknown'}\nbillingPeriod: ${extraction.billingPeriod ?? 'unknown'}\ntotal: ${extraction.total ?? 'unknown'}\npriorAmount: ${extraction.priorAmount ?? 'unknown'}\nlineItems:\n${items}\nhistory:\n${history || 'none printed'}`;
 }
-
 async function runCheck(options: {
-  system: string;
+  check: 'anomaly' | 'market' | 'plain';
+  billType: BillType;
   user: string;
-  label: 'anomaly' | 'market' | 'plain';
   sourceText: string;
 }): Promise<Finding[]> {
   const raw = await withDeadline(
-    callJsonModel({ system: options.system, user: options.user }),
+    callJsonModel({ system: systemFor(options.check, options.billType), user: options.user }),
     STAGE_DEADLINE_MS,
-    options.label,
+    options.check,
   );
-
   const findings = validateFindings(parseJsonObject(raw), {
-    source: options.label,
+    source: options.check,
     sourceText: options.sourceText,
-    idPrefix: `live-${options.label}`,
+    idPrefix: `live-${options.check}`,
   });
-
-  if (findings.length === 0) throw new Error(`${options.label}_no_grounded_findings`);
+  if (findings.length === 0) throw new Error(`${options.check}_no_grounded_findings`);
   return findings;
 }
 
-export function anomalyCheck(extraction: Extraction, sourceText: string): Promise<Finding[]> {
+function billUser(extraction: Extraction, sourceText: string, billType: BillType): string {
+  return `DECLARED BILL TYPE: ${billType}\nEXTRACTION:\n${extractionSummary(extraction)}\n\nBILL TEXT:\n${fenceUntrusted(sourceText)}`;
+}
+
+export function anomalyCheck(
+  extraction: Extraction,
+  sourceText: string,
+  billType: BillType,
+): Promise<Finding[]> {
   return runCheck({
-    system: ANOMALY_SYSTEM,
-    label: 'anomaly',
+    check: 'anomaly',
+    billType,
     sourceText,
-    user: `EXTRACTION:\n${extractionSummary(extraction)}\n\nBILL TEXT:\n${fenceUntrusted(sourceText)}`,
+    user: billUser(extraction, sourceText, billType),
   });
 }
 
-export function marketCheck(extraction: Extraction, sourceText: string): Promise<Finding[]> {
-  const rows = selectMarketRows(extraction.lineItems.map((item) => item.label));
-  const referenceBlock =
-    rows.length > 0
-      ? rows
-          .map((row) => `- ${row.label}: ${row.typicalRange}. ${row.note}`)
-          .join('\n')
-      : '- No relevant synthetic reference rows are available for these line items.';
-
+export function marketCheck(
+  extraction: Extraction,
+  sourceText: string,
+  billType: BillType,
+): Promise<Finding[]> {
+  const rows = billType === 'phone'
+    ? selectMarketRows(extraction.lineItems.map((item) => item.label))
+    : [];
+  const referenceBlock = rows.length > 0
+    ? rows.map((row) => `- ${row.label}: ${row.typicalRange}. ${row.note}`).join('\n')
+    : '- No synthetic comparison rows are supplied for this bill type.';
   return runCheck({
-    system: MARKET_SYSTEM,
-    label: 'market',
+    check: 'market',
+    billType,
     sourceText,
-    user: `SYNTHETIC REFERENCE ROWS (demo data only):\n${referenceBlock}\n\nEXTRACTION:\n${extractionSummary(
-      extraction,
-    )}\n\nBILL TEXT:\n${fenceUntrusted(sourceText)}`,
+    user: `SYNTHETIC REFERENCES:\n${referenceBlock}\n\n${billUser(extraction, sourceText, billType)}`,
   });
 }
 
-export function plainLanguageCheck(extraction: Extraction, sourceText: string): Promise<Finding[]> {
+export function plainLanguageCheck(
+  extraction: Extraction,
+  sourceText: string,
+  billType: BillType,
+): Promise<Finding[]> {
   return runCheck({
-    system: PLAIN_SYSTEM,
-    label: 'plain',
+    check: 'plain',
+    billType,
     sourceText,
-    user: `EXTRACTION:\n${extractionSummary(extraction)}\n\nBILL TEXT:\n${fenceUntrusted(sourceText)}`,
+    user: billUser(extraction, sourceText, billType),
   });
 }

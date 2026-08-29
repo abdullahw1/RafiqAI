@@ -27,10 +27,10 @@ is labelled as such. Set `DEMO_SAFE_MODE=true` to force the fallback with zero n
 | `VAPI_API_KEY`, `VAPI_PHONE_NUMBER_ID` | Call returns `unavailable`; the English briefing is shown |
 | `SARAH_PHONE_NUMBER` | Same as above; no outbound destination is resolvable |
 
-`OPENAI_API_KEY` accepts either an OpenAI key or an Anthropic `sk-ant-` key. An Anthropic key is
-routed to Anthropic's OpenAI-compatible chat-completions endpoint and defaults to
-`claude-sonnet-4-5`; override the model with `OPENAI_MODEL`. `SARAH_PHONE_NUMBER` is normalized to
-E.164, so `(408) 555-0311` and `+14085550311` both work.
+`OPENAI_API_KEY` accepts either an OpenAI key or an Anthropic `sk-ant-` key. Leave
+`OPENAI_MODEL` blank to select the matching default automatically (`gpt-4o-mini` for OpenAI or
+`claude-sonnet-4-5` for Anthropic), or set a model from the same provider. Live analysis also
+requires available provider credits. `SARAH_PHONE_NUMBER` is normalized to E.164, so `(408) 555-0311` and `+14085550311` both work.
 
 ```bash
 npm test        # 26 unit tests over the deterministic math, merge, validation, and fallback

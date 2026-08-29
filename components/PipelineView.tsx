@@ -8,66 +8,57 @@ export interface StageView {
   note?: string;
 }
 
-const STATUS_STYLE: Record<StageStatus, { badge: string; dot: string; text: string }> = {
-  pending: { badge: 'border-slate-700 bg-slate-900/60', dot: 'bg-slate-600', text: 'Pending' },
-  running: { badge: 'border-sky-500 bg-sky-950/50', dot: 'bg-sky-400 rafiq-running', text: 'Running' },
-  done: { badge: 'border-emerald-600 bg-emerald-950/40', dot: 'bg-emerald-400', text: 'Done' },
-  failed: { badge: 'border-rose-600 bg-rose-950/40', dot: 'bg-rose-400', text: 'Failed' },
-  fallback: { badge: 'border-amber-500 bg-amber-950/40', dot: 'bg-amber-400', text: 'Fallback' },
+const STATUS: Record<StageStatus, { label: string; className: string }> = {
+  pending: { label: 'Waiting', className: 'status-waiting' },
+  running: { label: 'In progress', className: 'status-running' },
+  done: { label: 'Ready', className: 'status-ready' },
+  failed: { label: 'Needs attention', className: 'status-failed' },
+  fallback: { label: 'Demo result used', className: 'status-demo' },
 };
 
-function StageCard({ stage }: { stage: StageView }) {
-  const style = STATUS_STYLE[stage.status];
-  return (
-    <li
-      className={`rounded-lg border p-3 transition-colors ${style.badge}`}
-      aria-label={`${stage.label}: ${style.text}`}
-    >
-      <div className="flex items-center gap-2">
-        <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${style.dot}`} aria-hidden="true" />
-        <span className="text-sm font-medium text-slate-100">{stage.label}</span>
-        <span className="ml-auto text-xs uppercase tracking-wide text-slate-400">{style.text}</span>
-      </div>
-      <p className="mt-1 text-xs text-slate-400">{stage.description}</p>
-      {stage.note ? <p className="mt-1 text-xs text-amber-300">{stage.note}</p> : null}
-    </li>
-  );
+function friendlyNote(stage: StageView): string | null {
+  if (stage.note !== undefined) return stage.note;
+  if (stage.status === 'fallback') {
+    return 'The verified demo result was used because the live check was unavailable.';
+  }
+  if (stage.status === 'failed') {
+    return 'This step could not finish. Any completed results will still appear below.';
+  }
+  return null;
 }
 
 export function PipelineView({ stages }: { stages: readonly StageView[] }) {
-  const extract = stages.find((stage) => stage.id === 'extract');
-  const concurrent = stages.filter((stage) => ['anomaly', 'market', 'plain'].includes(stage.id));
-  const local = stages.filter((stage) => ['trend', 'merge'].includes(stage.id));
-
+  const hasStarted = stages.some((stage) => stage.status !== 'pending');
+  const completedCount = stages.filter((stage) => ['done', 'failed', 'fallback'].includes(stage.status)).length;
   return (
-    <section aria-label="Analysis pipeline" className="space-y-3">
-      <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-400">Pipeline</h2>
-
-      {extract ? (
-        <ul className="grid grid-cols-1">
-          <StageCard stage={extract} />
-        </ul>
-      ) : null}
-
-      <div>
-        <p className="mb-1.5 text-xs text-slate-500">
-          Three independent checks running concurrently
-        </p>
-        <ul className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-          {concurrent.map((stage) => (
-            <StageCard key={stage.id} stage={stage} />
-          ))}
-        </ul>
+    <section aria-labelledby="progress-heading" className="panel progress-panel">
+      <div className="section-heading">
+        <span className="step-number" aria-hidden="true">3</span>
+        <div>
+          <h2 id="progress-heading">Review progress</h2>
+          <p>{hasStarted ? 'Follow each check as it finishes.' : 'The review steps will appear here after you select Analyze bill.'}</p>
+        </div>
       </div>
-
-      <div>
-        <p className="mb-1.5 text-xs text-slate-500">Deterministic local calculation</p>
-        <ul className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-          {local.map((stage) => (
-            <StageCard key={stage.id} stage={stage} />
-          ))}
-        </ul>
-      </div>
+      <p className="sr-only" aria-live="polite">{completedCount} of {stages.length} review steps finished.</p>
+      <ol className="pipeline-list">
+        {stages.map((stage, index) => {
+          const status = STATUS[stage.status];
+          const note = friendlyNote(stage);
+          return (
+            <li key={stage.id} className={`pipeline-card ${status.className}`}>
+              <span className="pipeline-number" aria-hidden="true">{index + 1}</span>
+              <div className="pipeline-copy">
+                <div className="pipeline-title-row">
+                  <h3>{stage.label}</h3>
+                  <span className="status-pill">{status.label}</span>
+                </div>
+                <p>{stage.description}</p>
+                {note !== null ? <p className="stage-note">{note}</p> : null}
+              </div>
+            </li>
+          );
+        })}
+      </ol>
     </section>
   );
 }

@@ -40,9 +40,17 @@ function getClient(): OpenAI {
 }
 
 export function modelName(): string {
+  const apiKey = readApiKey();
+  const anthropic = isAnthropicKey(apiKey);
   const configured = process.env.OPENAI_MODEL?.trim();
-  if (configured) return configured;
-  return isAnthropicKey(readApiKey()) ? DEFAULT_ANTHROPIC_MODEL : DEFAULT_OPENAI_MODEL;
+
+  if (!configured) return anthropic ? DEFAULT_ANTHROPIC_MODEL : DEFAULT_OPENAI_MODEL;
+
+  // Avoid sending the template's provider-specific default to the wrong API.
+  if (anthropic && /^gpt-/iu.test(configured)) return DEFAULT_ANTHROPIC_MODEL;
+  if (!anthropic && /^claude-/iu.test(configured)) return DEFAULT_OPENAI_MODEL;
+
+  return configured;
 }
 
 /** Rejects with `stage_timeout` when the deadline expires (Requirements 2.4, 3.8). */

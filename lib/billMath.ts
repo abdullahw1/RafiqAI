@@ -1,104 +1,195 @@
-import { SEEDED_HISTORY, type HistoryPoint } from '@/data/seed';
-import type { Extraction, Finding, TrendPoint } from './types';
+import { PHONE_CARRIER_COMPARISON_SEEDS } from '@/data/seed';
+import type {
+  BillType,
+  CarrierComparison,
+  Extraction,
+  Finding,
+  TrendDirection,
+  TrendPoint,
+} from './types';
 
 export interface TrendAnalysis {
   trend: TrendPoint[];
-  /** Rounded whole-percent increase from the earliest to the latest total. */
+  baselineAverage: number | null;
+  baselinePointCount: number;
+  currentVsAverageAmount: number | null;
+  currentVsAveragePercent: number | null;
+  trendDirection: TrendDirection;
   increasePercent: number;
   potentialMonthlyImpact: number;
   potentialAnnualImpact: number;
-  /** Charges considered questionable: new or newly added items. */
   questionedCharges: TrendPoint[];
 }
 
+export interface TrendPresentation {
+  title: string;
+  comparison: string;
+  isSignificantIncrease: boolean;
+}
+
 const MONTHS_PER_YEAR = 12;
+const MAX_BASELINE_POINTS = 5;
+export const SIGNIFICANT_INCREASE_PERCENT = 10;
 
 function round2(value: number): number {
   return Math.round(value * 100) / 100;
 }
 
-/**
- * Requirement 4.2: $58 → $82 reports as approximately 41%.
- * (82 - 58) / 58 = 0.41379… → 41.
- */
 export function percentIncrease(from: number, to: number): number {
   if (!Number.isFinite(from) || !Number.isFinite(to) || from <= 0) return 0;
   return Math.round(((to - from) / from) * 100);
 }
 
-/**
- * Builds the displayed trend from seeded history, replacing the latest point with the
- * extracted total when the extraction supplies one.
- */
+/** Uses only history extracted from the submitted document; no global history is injected. */
 export function buildTrend(extraction: Extraction): TrendPoint[] {
-  const seeded: HistoryPoint[] = SEEDED_HISTORY.map((point) => ({ ...point }));
-  const total = extraction.total;
-  if (total === null || !Number.isFinite(total) || seeded.length === 0) return seeded;
-  return seeded.map((point, index) =>
-    index === seeded.length - 1 ? { label: point.label, amount: round2(total) } : point,
-  );
+  const history = extraction.history
+    .filter((point) => Number.isFinite(point.amount))
+    .map((point) => ({ label: point.label, amount: round2(point.amount) }));
+  if (history.length > 0) return history;
+  return extraction.total !== null && Number.isFinite(extraction.total)
+    ? [{ label: 'Current', amount: round2(extraction.total) }]
+    : [];
 }
 
-/**
- * Line items that are not the base service are treated as charges worth questioning.
- * Requirement 4.3: $9 + $15 = $24/month, $288/year.
- */
-export function selectQuestionedCharges(extraction: Extraction): TrendPoint[] {
+export function selectQuestionedCharges(
+  extraction: Extraction,
+  billType: BillType,
+  isPreparedDemo = false,
+): TrendPoint[] {
+  if (billType !== 'phone' || !isPreparedDemo) return [];
   return extraction.lineItems
     .filter((item) => item.amount !== null && Number.isFinite(item.amount) && item.amount > 0)
     .filter((item) => !/base|unlimited talk/iu.test(item.label))
     .map((item) => ({ label: item.label, amount: round2(item.amount as number) }));
 }
 
-export function calculateTrendAndImpact(extraction: Extraction): TrendAnalysis {
+function directionFor(amount: number | null): TrendDirection {
+  if (amount === null) return 'unknown';
+  if (amount > 0) return 'increase';
+  if (amount < 0) return 'decrease';
+  return 'flat';
+}
+
+export function calculateTrendAndImpact(
+  extraction: Extraction,
+  billType: BillType,
+  isPreparedDemo = false,
+): TrendAnalysis {
   const trend = buildTrend(extraction);
-  const first = trend[0]?.amount ?? 0;
-  const last = trend[trend.length - 1]?.amount ?? 0;
-  const questionedCharges = selectQuestionedCharges(extraction);
+  const current = trend.at(-1)?.amount ?? null;
+  const baseline = trend.slice(-(MAX_BASELINE_POINTS + 1), -1).map((point) => point.amount);
+  const baselineAverage = baseline.length > 0
+    ? round2(baseline.reduce((sum, amount) => sum + amount, 0) / baseline.length)
+    : null;
+  const currentVsAverageAmount = current !== null && baselineAverage !== null
+    ? round2(current - baselineAverage)
+    : null;
+  const currentVsAveragePercent =
+    current !== null && baselineAverage !== null && baselineAverage > 0
+      ? percentIncrease(baselineAverage, current)
+      : null;
+  const questionedCharges = selectQuestionedCharges(extraction, billType, isPreparedDemo);
   const potentialMonthlyImpact = round2(
     questionedCharges.reduce((sum, charge) => sum + charge.amount, 0),
   );
 
   return {
     trend,
-    increasePercent: percentIncrease(first, last),
+    baselineAverage,
+    baselinePointCount: baseline.length,
+    currentVsAverageAmount,
+    currentVsAveragePercent,
+    trendDirection: directionFor(currentVsAverageAmount),
+    increasePercent: currentVsAveragePercent ?? 0,
     potentialMonthlyImpact,
     potentialAnnualImpact: round2(potentialMonthlyImpact * MONTHS_PER_YEAR),
     questionedCharges,
   };
 }
 
+export function buildCarrierComparisons(
+  billType: BillType,
+  currentTotal: number | null,
+  isPreparedDemo = false,
+): CarrierComparison[] {
+  if (billType !== 'phone' || !isPreparedDemo) return [];
+  return PHONE_CARRIER_COMPARISON_SEEDS.map((row) => ({
+    ...row,
+    potentialMonthlySavings:
+      currentTotal !== null && Number.isFinite(currentTotal)
+        ? round2(Math.max(0, currentTotal - row.monthlyPrice))
+        : 0,
+  }));
+}
+
 export function formatUsd(amount: number): string {
   return `$${amount.toFixed(2)}`;
 }
 
-/**
- * The deterministic trend finding. Worded as potential impact only (Requirement 4.4).
- */
-export function buildTrendFinding(analysis: TrendAnalysis, evidence: string): Finding {
-  const first = analysis.trend[0];
-  const last = analysis.trend[analysis.trend.length - 1];
-  const chargeList = analysis.questionedCharges
-    .map((charge) => `${charge.label} (${formatUsd(charge.amount)})`)
-    .join(' and ');
+const COUNT_WORDS = ['zero', 'one', 'two', 'three', 'four', 'five'] as const;
 
+export function baselineLabel(pointCount: number): string {
+  const count = COUNT_WORDS[pointCount] ?? String(pointCount);
+  return `previous ${count}-month average`;
+}
+
+export function presentTrend(analysis: TrendAnalysis): TrendPresentation {
+  const label = baselineLabel(analysis.baselinePointCount);
+  const percent = analysis.currentVsAveragePercent === null
+    ? null
+    : Math.abs(analysis.currentVsAveragePercent);
+  const amount = Math.abs(analysis.currentVsAverageAmount ?? 0);
+
+  if (analysis.trendDirection === 'increase') {
+    return {
+      title: percent === null
+        ? `Current total is above the ${label}`
+        : `Current total is about ${percent}% above the ${label}`,
+      comparison: `the current total is ${formatUsd(amount)} higher`,
+      isSignificantIncrease: percent !== null && percent >= SIGNIFICANT_INCREASE_PERCENT,
+    };
+  }
+  if (analysis.trendDirection === 'decrease') {
+    return {
+      title: percent === null
+        ? `Current total is below the ${label}`
+        : `Current total is about ${percent}% below the ${label}`,
+      comparison: `the current total is ${formatUsd(amount)} lower`,
+      isSignificantIncrease: false,
+    };
+  }
+  if (analysis.trendDirection === 'flat') {
+    return {
+      title: `Current total matches the ${label}`,
+      comparison: 'the current total matches that average',
+      isSignificantIncrease: false,
+    };
+  }
   return {
-    id: 'trend-total-increase',
-    severity: 'warning',
-    title: `Monthly total rose about ${analysis.increasePercent}% since ${first?.label ?? 'the first month'}`,
+    title: 'The current total is shown without enough prior points for a comparison',
+    comparison: 'there is not enough prior history for a comparison',
+    isSignificantIncrease: false,
+  };
+}
+
+export function buildTrendFinding(analysis: TrendAnalysis, evidence: string): Finding {
+  const history = analysis.trend.map((point) => `${point.label} ${formatUsd(point.amount)}`).join(', ');
+  const presentation = presentTrend(analysis);
+  return {
+    id: 'trend-total-change',
+    severity: presentation.isSignificantIncrease ? 'warning' : 'info',
+    title: presentation.title,
     evidence,
-    explanation:
-      `Seeded account history shows ${analysis.trend
-        .map((point) => `${point.label} ${formatUsd(point.amount)}`)
-        .join(', ')}. The increase from ${formatUsd(first?.amount ?? 0)} to ${formatUsd(
-        last?.amount ?? 0,
-      )} lines up with ${chargeList || 'the added charges'}, which are worth questioning.`,
+    explanation: `The document's history shows ${history}. The ${baselineLabel(
+      analysis.baselinePointCount,
+    )} is ${formatUsd(analysis.baselineAverage ?? 0)}; ${presentation.comparison}.`,
     potentialImpact:
-      `Up to ${formatUsd(analysis.potentialMonthlyImpact)} per month, or up to ${formatUsd(
-        analysis.potentialAnnualImpact,
-      )} per year — only if both charges turn out to be removable. This is not a guaranteed saving or refund.`,
-    action:
-      'Ask the carrier to explain each added charge and confirm in writing whether it is optional, using the number printed on the statement or the official app.',
+      analysis.potentialMonthlyImpact > 0
+        ? `Up to ${formatUsd(analysis.potentialMonthlyImpact)} per month, or up to ${formatUsd(
+            analysis.potentialAnnualImpact,
+          )} per year, only if the questioned charges are removable. This is not a guaranteed saving or refund.`
+        : null,
+    action: 'Ask the provider to explain the change using the official contact details on the statement.',
     source: 'trend',
   };
 }

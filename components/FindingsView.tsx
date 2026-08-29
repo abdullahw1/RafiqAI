@@ -1,121 +1,192 @@
+import { SIGNIFICANT_INCREASE_PERCENT, baselineLabel } from '@/lib/billMath';
 import type { AnalysisResult, Finding } from '@/lib/types';
 
 const SOURCE_LABEL: Record<Finding['source'], string> = {
-  trend: 'Local trend calculation',
-  anomaly: 'Anomaly check',
-  market: 'Synthetic market comparison',
+  trend: 'Bill history calculation',
+  anomaly: 'Unexpected-change check',
+  market: 'Cost comparison check',
   plain: 'Plain-language check',
 };
 
 function money(amount: number): string {
-  return `$${amount.toFixed(2)}`;
+  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(amount);
 }
 
-function TrendStrip({ result }: { result: AnalysisResult }) {
+function HistorySummary({ result }: { result: AnalysisResult }) {
+  const current = result.trend.at(-1);
   const max = Math.max(...result.trend.map((point) => point.amount), 1);
-  return (
-    <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-4">
-      <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1">
-        <p className="text-2xl font-semibold text-amber-300">
-          ~{result.increasePercent}% increase
-        </p>
-        <p className="text-sm text-slate-300">
-          Potential impact: up to{' '}
-          <span className="font-semibold text-slate-100">
-            {money(result.potentialMonthlyImpact)}/month
-          </span>{' '}
-          or{' '}
-          <span className="font-semibold text-slate-100">
-            {money(result.potentialAnnualImpact)}/year
-          </span>
-        </p>
-      </div>
-      <p className="mt-1 text-xs text-slate-500">
-        Conditional on the charges turning out to be removable. Not a guaranteed saving or refund.
-      </p>
+  const hasComparison =
+    current !== undefined &&
+    result.baselinePointCount > 0 &&
+    result.baselineAverage !== null &&
+    result.currentVsAverageAmount !== null;
+  const averageLabel = baselineLabel(result.baselinePointCount);
+  const absoluteDifference = Math.abs(result.currentVsAverageAmount ?? 0);
+  const absolutePercent = result.currentVsAveragePercent === null
+    ? null
+    : Math.abs(result.currentVsAveragePercent);
+  const isSignificantIncrease =
+    result.trendDirection === 'increase' &&
+    absolutePercent !== null &&
+    absolutePercent >= SIGNIFICANT_INCREASE_PERCENT;
+  const summaryTitle = !hasComparison
+    ? 'Your bill history at a glance'
+    : isSignificantIncrease
+      ? `${current.label} is exceptionally high compared with the ${averageLabel}`
+      : result.trendDirection === 'increase'
+        ? `${current.label} is slightly above the ${averageLabel}`
+        : result.trendDirection === 'decrease'
+          ? `${current.label} is below the ${averageLabel}`
+          : `${current.label} matches the ${averageLabel}`;
 
-      <ul className="mt-4 flex items-end gap-4" aria-label="Monthly totals">
-        {result.trend.map((point) => (
-          <li key={point.label} className="flex flex-1 flex-col items-center gap-1">
-            <span className="text-xs text-slate-300">{money(point.amount)}</span>
-            <div
-              className="w-full rounded-t bg-sky-700"
-              style={{ height: `${Math.round((point.amount / max) * 72) + 8}px` }}
-              aria-hidden="true"
-            />
-            <span className="text-xs text-slate-500">{point.label}</span>
-          </li>
-        ))}
-      </ul>
-      <p className="mt-2 text-xs text-slate-500">
-        Account history is synthetic demonstration data.
-      </p>
-    </div>
+  return (
+    <section aria-labelledby="history-heading" className="summary-card">
+      <p className="eyebrow">Your clearest finding</p>
+      <h2 id="history-heading">{summaryTitle}</h2>
+      {hasComparison ? (
+        <p className="summary-lead">
+          The {current.label} total is <strong>{money(current.amount)}</strong>—{' '}
+          {result.trendDirection === 'flat' ? (
+            <>the same as the {averageLabel} of <strong>{money(result.baselineAverage as number)}</strong>.</>
+          ) : (
+            <>
+              <strong>{money(absoluteDifference)} {result.trendDirection === 'decrease' ? 'lower' : 'higher'}</strong>{' '}
+              than the {averageLabel} of <strong>{money(result.baselineAverage as number)}</strong>
+              {absolutePercent === null ? '.' : (
+                <> ({absolutePercent}% {result.trendDirection === 'decrease' ? 'lower' : 'higher'}).</>
+              )}
+            </>
+          )}
+        </p>
+      ) : (
+        <p className="summary-lead">The document did not include enough earlier totals for a reliable comparison.</p>
+      )}
+
+      {result.trend.length > 0 ? (
+        <div className="table-scroll">
+          <table className="history-table">
+            <caption>Monthly totals found in the bill</caption>
+            <thead><tr><th scope="col">Month</th><th scope="col">Total</th><th scope="col">Relative amount</th></tr></thead>
+            <tbody>
+              {result.trend.map((point, index) => (
+                <tr key={`${point.label}-${index}`} className={index === result.trend.length - 1 ? 'current-row' : undefined}>
+                  <th scope="row">{point.label}{index === result.trend.length - 1 ? ' (current)' : ''}</th>
+                  <td>{money(point.amount)}</td>
+                  <td>
+                    <div className="bar-track" role="img" aria-label={`${point.label}: ${money(point.amount)}`}>
+                      <span className="bar-fill" style={{ width: `${Math.max(8, (point.amount / max) * 100)}%` }} />
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+      {isSignificantIncrease ? (
+        <div className="why-box">
+          <h3>Why this is unusual</h3>
+          <p>
+            The current total is about {absolutePercent}% above the {averageLabel}. That makes it
+            worth checking which charges changed, even though an increase alone does not mean the bill is wrong.
+          </p>
+        </div>
+      ) : null}
+      {result.potentialMonthlyImpact > 0 ? (
+        <p className="impact-note">
+          If every questioned charge can be removed, the possible impact is up to{' '}
+          <strong>{money(result.potentialMonthlyImpact)} a month</strong> or{' '}
+          <strong>{money(result.potentialAnnualImpact)} a year</strong>. This is not guaranteed.
+        </p>
+      ) : null}
+    </section>
   );
 }
 
 function FindingCard({ finding }: { finding: Finding }) {
-  const isWarning = finding.severity === 'warning';
   return (
-    <li
-      className={`rounded-lg border p-4 ${
-        isWarning ? 'border-amber-700/70 bg-amber-950/20' : 'border-slate-800 bg-slate-900/50'
-      }`}
-    >
-      <div className="flex items-start gap-2">
-        <span
-          className={`mt-0.5 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
-            isWarning ? 'bg-amber-500/20 text-amber-300' : 'bg-slate-700/50 text-slate-300'
-          }`}
-        >
-          {isWarning ? 'Worth questioning' : 'Context'}
-        </span>
-        <h3 className="text-base font-semibold text-slate-100">{finding.title}</h3>
+    <li className={`finding-card ${finding.severity === 'warning' ? 'finding-warning' : ''}`}>
+      <p className="finding-label">{finding.severity === 'warning' ? 'Worth asking about' : 'Helpful context'}</p>
+      <h3>{finding.title}</h3>
+      <div className="finding-section">
+        <h4>Why it may be unusual</h4>
+        <p>{finding.explanation}</p>
       </div>
-
-      <figure className="mt-3">
-        <figcaption className="text-[10px] uppercase tracking-wide text-slate-500">
-          Exact text from the bill
-        </figcaption>
-        <blockquote className="mt-1 overflow-x-auto rounded border border-slate-700 bg-slate-950/80 px-3 py-2 font-mono text-xs whitespace-pre text-emerald-200">
-          {finding.evidence}
-        </blockquote>
-      </figure>
-
-      <p className="mt-3 text-sm leading-relaxed text-slate-300">{finding.explanation}</p>
-
-      {finding.potentialImpact ? (
-        <p className="mt-2 text-sm text-amber-200">
-          <span className="font-semibold">Potential impact:</span> {finding.potentialImpact}
-        </p>
-      ) : null}
-
-      <p className="mt-2 text-sm text-sky-200">
-        <span className="font-semibold">Safe next step:</span> {finding.action}
-      </p>
-      <p className="mt-2 text-[11px] uppercase tracking-wide text-slate-500">
-        Source: {SOURCE_LABEL[finding.source]}
-      </p>
+      {finding.potentialImpact ? <p className="impact-note"><strong>Possible impact:</strong> {finding.potentialImpact}</p> : null}
+      <details className="evidence-details">
+        <summary>View evidence and source</summary>
+        <blockquote>{finding.evidence}</blockquote>
+        <p><strong>Source:</strong> {SOURCE_LABEL[finding.source]}</p>
+      </details>
     </li>
   );
 }
 
-export function FindingsView({ result }: { result: AnalysisResult }) {
+function Comparisons({ result }: { result: AnalysisResult }) {
+  if (result.billType !== 'phone' || result.carrierComparisons.length === 0) return null;
   return (
-    <section aria-label="Findings" className="space-y-4">
-      <TrendStrip result={result} />
-      <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-400">
-        {result.findings.length} finding{result.findings.length === 1 ? '' : 's'}
-      </h2>
-      <ul className="space-y-3">
-        {result.findings.map((finding) => (
-          <FindingCard key={finding.id} finding={finding} />
+    <section aria-labelledby="comparison-heading" className="panel results-section">
+      <div className="section-heading">
+        <span className="step-number" aria-hidden="true">5</span>
+        <div>
+          <h2 id="comparison-heading">Phone plan comparisons</h2>
+          <p>These figures are invented for this demo. They are not live prices or offers.</p>
+        </div>
+      </div>
+      <div className="comparison-grid">
+        {result.carrierComparisons.map((comparison) => (
+          <article key={comparison.carrier} className="comparison-card">
+            <p className="synthetic-label">Synthetic demo estimate</p>
+            <h3>{comparison.carrier}</h3>
+            <p className="comparison-price">{money(comparison.monthlyPrice)}<span> / month</span></p>
+            <p>Possible difference from this bill: {money(comparison.potentialMonthlySavings)} a month.</p>
+            <p className="small-note">{comparison.note}</p>
+          </article>
         ))}
-      </ul>
-      <p className="text-xs text-slate-500">
-        Findings are informational and may be wrong. They identify charges worth questioning; they do
-        not establish fraud, illegality, or a guaranteed refund.
-      </p>
+      </div>
+    </section>
+  );
+}
+export function FindingsView({ result }: { result: AnalysisResult }) {
+  const actions = [...new Set(result.findings.map((finding) => finding.action).filter(Boolean))];
+
+  return (
+    <section aria-labelledby="findings-heading" className="results-stack">
+      <div className="section-heading result-heading">
+        <span className="step-number" aria-hidden="true">4</span>
+        <div>
+          <h2 id="findings-heading">What the review found</h2>
+          <p>{result.findings.length} item{result.findings.length === 1 ? '' : 's'} to consider.</p>
+        </div>
+      </div>
+
+      <HistorySummary result={result} />
+
+      {result.findings.length > 0 ? (
+        <section aria-labelledby="details-heading" className="panel results-section">
+          <h2 id="details-heading">Why these charges may be unusual</h2>
+          <ul className="finding-list">
+            {result.findings.map((finding) => <FindingCard key={finding.id} finding={finding} />)}
+          </ul>
+        </section>
+      ) : null}
+
+      <Comparisons result={result} />
+
+      <section aria-labelledby="next-heading" className="panel next-steps">
+        <h2 id="next-heading">What to do next</h2>
+        {actions.length > 0 ? (
+          <ol>
+            {actions.map((action) => <li key={action}>{action}</li>)}
+          </ol>
+        ) : (
+          <p>Keep the bill nearby and ask the provider to explain any amount you do not recognize.</p>
+        )}
+        <p className="small-note">
+          Use the official contact information printed on the bill. These findings are informational and may be wrong;
+          they do not prove fraud or guarantee a refund.
+        </p>
+      </section>
     </section>
   );
 }

@@ -1,5 +1,12 @@
+import { PREPARED_BILL_TEXT } from '@/data/preparedBill';
 import { anomalyCheck, marketCheck, plainLanguageCheck } from '@/lib/checks';
-import { buildTrendFinding, calculateTrendAndImpact, type TrendAnalysis } from '@/lib/billMath';
+import {
+  buildCarrierComparisons,
+  buildTrendFinding,
+  calculateTrendAndImpact,
+  type TrendAnalysis,
+} from '@/lib/billMath';
+import { issueCallToken } from '@/lib/callToken';
 import { extract } from '@/lib/extract';
 import {
   FALLBACK_ANOMALY_FINDINGS,
@@ -12,63 +19,74 @@ import {
 import { buildBriefing, firstName, mergeFindings, resolveMode } from '@/lib/merge';
 import { hasOpenAiCredentials, logStageFailure, OVERALL_DEADLINE_MS } from '@/lib/openai';
 import { NdjsonWriter } from '@/lib/stream';
-import type { AnalysisResult, Extraction, Finding } from '@/lib/types';
-import { PREPARED_BILL_TEXT } from '@/data/preparedBill';
+import type { AnalysisResult, BillType, Extraction, Finding } from '@/lib/types';
+import { isBillType, validateSourceFileName } from '@/lib/validate';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-const MAX_INPUT_CHARS = 20_000;
+const MAX_INPUT_CHARS = 40_000;
 const MIN_INPUT_CHARS = 20;
 
-/** The whole bill is the evidence anchor for the deterministic trend finding. */
-const TREND_EVIDENCE = 'TOTAL AMOUNT DUE                                         $82.00';
-
 function trendEvidenceFor(text: string): string {
-  const line = text
+  return text
     .split('\n')
     .map((candidate) => candidate.trim())
-    .find((candidate) => /total amount due/iu.test(candidate));
-  return line ?? TREND_EVIDENCE;
+    .find((candidate) => /total amount due|amount due|current total/iu.test(candidate)) ?? '';
 }
 
 function buildResult(options: {
   extraction: Extraction;
+  billType: BillType;
   analysis: TrendAnalysis;
   groups: Finding[][];
   usedFallback: boolean;
   failedStages: number;
   trendEvidence: string;
+  isPreparedDemo: boolean;
 }): AnalysisResult {
   const mode = resolveMode({
     usedFallback: options.usedFallback,
     failedStages: options.failedStages,
   });
-
-  const findings = mergeFindings([
-    [buildTrendFinding(options.analysis, options.trendEvidence)],
-    ...options.groups,
-  ]);
+  const trendGroup = options.analysis.trend.length >= 2 && options.trendEvidence.length >= 4
+    ? [buildTrendFinding(options.analysis, options.trendEvidence)]
+    : [];
+  const findings = mergeFindings([trendGroup, ...options.groups]);
+  const carrierComparisons = buildCarrierComparisons(
+    options.billType,
+    options.extraction.total,
+    options.isPreparedDemo,
+  );
+  const briefing = buildBriefing({
+    accountHolderFirstName: firstName(options.extraction.accountHolder),
+    vendor: options.extraction.vendor,
+    analysis: options.analysis,
+    mode,
+    billType: options.billType,
+    comparisons: carrierComparisons,
+    isPreparedDemo: options.isPreparedDemo,
+  });
 
   return {
     mode,
+    billType: options.billType,
     findings,
     trend: options.analysis.trend,
+    baselineAverage: options.analysis.baselineAverage,
+    baselinePointCount: options.analysis.baselinePointCount,
+    currentVsAverageAmount: options.analysis.currentVsAverageAmount,
+    currentVsAveragePercent: options.analysis.currentVsAveragePercent,
+    trendDirection: options.analysis.trendDirection,
     increasePercent: options.analysis.increasePercent,
     potentialMonthlyImpact: options.analysis.potentialMonthlyImpact,
     potentialAnnualImpact: options.analysis.potentialAnnualImpact,
-    briefing: buildBriefing({
-      accountHolderFirstName: firstName(options.extraction.accountHolder),
-      vendor: options.extraction.vendor,
-      analysis: options.analysis,
-      findings,
-      mode,
-    }),
-    syntheticComparisonData: true,
+    carrierComparisons,
+    briefing,
+    callToken: issueCallToken('sarah', briefing),
+    syntheticComparisonData: carrierComparisons.length > 0,
   };
 }
-
-/** Fully local path: no network calls at all (Task 2 hard gate). */
 function runFallbackPipeline(
   writer: NdjsonWriter,
   note: string,
@@ -76,20 +94,16 @@ function runFallbackPipeline(
 ): void {
   if (options.extractAlreadyStarted !== true) writer.stage('extract', 'running');
   writer.stage('extract', 'fallback', note);
-
   for (const stage of ['anomaly', 'market', 'plain'] as const) {
-    writer.stage(stage, 'running');
-  }
-  for (const stage of ['anomaly', 'market', 'plain'] as const) {
-    writer.stage(stage, 'fallback', note);
+    writer.stage(stage, 'fallback', 'Verified prepared-bill demo data used; the live check did not run.');
   }
   writer.stage('trend', 'running');
-  const analysis = calculateTrendAndImpact(FALLBACK_EXTRACTION);
+  const analysis = calculateTrendAndImpact(FALLBACK_EXTRACTION, 'phone', true);
   writer.stage('trend', 'done');
-
   writer.stage('merge', 'running');
   const result = buildResult({
     extraction: FALLBACK_EXTRACTION,
+    billType: 'phone',
     analysis,
     groups: [
       [...FALLBACK_ANOMALY_FINDINGS],
@@ -99,21 +113,24 @@ function runFallbackPipeline(
     usedFallback: true,
     failedStages: 0,
     trendEvidence: trendEvidenceFor(PREPARED_BILL_TEXT),
+    isPreparedDemo: true,
   });
   writer.stage('merge', 'done');
-
   writer.send({ type: 'result', data: result });
   writer.complete('fallback');
 }
 
-async function runLivePipeline(writer: NdjsonWriter, text: string): Promise<void> {
-  const allowFallback = fallbackIsAllowed(text);
-
-  // Stage 1: extraction.
+async function runLivePipeline(
+  writer: NdjsonWriter,
+  text: string,
+  billType: BillType,
+  isPreparedDemo: boolean,
+): Promise<void> {
+  const allowFallback = isPreparedDemo;
   writer.stage('extract', 'running');
   let extraction: Extraction;
   try {
-    extraction = await extract(text);
+    extraction = await extract(text, billType);
     writer.stage('extract', 'done');
   } catch (error) {
     logStageFailure('extract', error);
@@ -121,7 +138,7 @@ async function runLivePipeline(writer: NdjsonWriter, text: string): Promise<void
       writer.stage('extract', 'failed', 'Extraction failed and no verified fallback applies to this text.');
       writer.send({
         type: 'error',
-        message: 'We could not read this document. Please try the prepared demo bill.',
+        message: 'We could not read this document. Check the selected bill type and extracted text.',
         recoverable: true,
       });
       writer.complete('partial');
@@ -133,23 +150,17 @@ async function runLivePipeline(writer: NdjsonWriter, text: string): Promise<void
     return;
   }
 
-  // Stage 2: three genuinely concurrent checks. All three promises are created and all
-  // three running events are emitted BEFORE anything is awaited (Property 3).
   const pending = [
-    { id: 'anomaly' as const, promise: anomalyCheck(extraction, text) },
-    { id: 'market' as const, promise: marketCheck(extraction, text) },
-    { id: 'plain' as const, promise: plainLanguageCheck(extraction, text) },
+    { id: 'anomaly' as const, promise: anomalyCheck(extraction, text, billType) },
+    { id: 'market' as const, promise: marketCheck(extraction, text, billType) },
+    { id: 'plain' as const, promise: plainLanguageCheck(extraction, text, billType) },
   ];
-  for (const check of pending) {
-    writer.stage(check.id, 'running');
-  }
-
+  for (const check of pending) writer.stage(check.id, 'running');
   const settled = await Promise.allSettled(pending.map((check) => check.promise));
 
   const groups: Finding[][] = [];
   let failedStages = 0;
   let usedFallbackStage = false;
-
   settled.forEach((outcome, index) => {
     const stage = pending[index]!.id;
     if (outcome.status === 'fulfilled') {
@@ -157,74 +168,85 @@ async function runLivePipeline(writer: NdjsonWriter, text: string): Promise<void
       writer.stage(stage, 'done');
       return;
     }
-
     logStageFailure(stage, outcome.reason);
     if (allowFallback) {
-      const fallbackFindings =
-        stage === 'anomaly'
-          ? FALLBACK_ANOMALY_FINDINGS
-          : stage === 'market'
-            ? FALLBACK_MARKET_FINDINGS
-            : FALLBACK_PLAIN_FINDINGS;
+      const fallbackFindings = stage === 'anomaly'
+        ? FALLBACK_ANOMALY_FINDINGS
+        : stage === 'market'
+          ? FALLBACK_MARKET_FINDINGS
+          : FALLBACK_PLAIN_FINDINGS;
       groups.push([...fallbackFindings]);
       usedFallbackStage = true;
       writer.stage(stage, 'fallback', 'This check used verified demo fallback content.');
       return;
     }
-
     failedStages += 1;
     writer.stage(stage, 'failed', 'This check did not return usable output.');
   });
 
-  // Stage 3: deterministic local math.
   writer.stage('trend', 'running');
-  const analysis = calculateTrendAndImpact(extraction);
+  const resultExtraction = isPreparedDemo ? FALLBACK_EXTRACTION : extraction;
+  const analysis = calculateTrendAndImpact(resultExtraction, billType, isPreparedDemo);
   writer.stage('trend', 'done');
-
-  // Stage 4: local merge and briefing.
   writer.stage('merge', 'running');
   const result = buildResult({
-    extraction,
+    extraction: resultExtraction,
+    billType,
     analysis,
     groups,
     usedFallback: usedFallbackStage,
     failedStages,
     trendEvidence: trendEvidenceFor(text),
+    isPreparedDemo,
   });
   writer.stage('merge', 'done');
-
   writer.send({ type: 'result', data: result });
   writer.complete(result.mode);
 }
+interface AnalyzeInput {
+  text: string;
+  billType: BillType;
+  sourceFileName?: string;
+}
+
+async function readInput(request: Request): Promise<AnalyzeInput | null> {
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return null;
+  }
+  if (typeof body !== 'object' || body === null) return null;
+  const record = body as Record<string, unknown>;
+  if (typeof record.text !== 'string' || !isBillType(record.billType)) return null;
+  const text = record.text;
+  if ('sourceFileName' in record) {
+    const sourceFileName = validateSourceFileName(record.sourceFileName);
+    if (sourceFileName === null) return null;
+    return { text, billType: record.billType, sourceFileName };
+  }
+  return { text, billType: record.billType };
+}
 
 export async function POST(request: Request): Promise<Response> {
-  let text = '';
-  try {
-    const body: unknown = await request.json();
-    if (typeof body === 'object' && body !== null && 'text' in body) {
-      const value = (body as { text: unknown }).text;
-      if (typeof value === 'string') text = value.trim();
-    }
-  } catch {
-    return Response.json({ error: 'Invalid request body.' }, { status: 400 });
-  }
-
-  // Requirement 1.4 / design: empty input returns 400 before opening the stream.
-  if (text.length < MIN_INPUT_CHARS) {
+  const input = await readInput(request);
+  if (input === null) {
     return Response.json(
-      { error: 'Please paste the bill text before starting analysis.' },
+      { error: 'Expected JSON with text, a valid billType, and an optional safe sourceFileName.' },
       { status: 400 },
     );
   }
-  if (text.length > MAX_INPUT_CHARS) {
+  if (input.text.trim().length < MIN_INPUT_CHARS) {
+    return Response.json({ error: 'Please provide bill text before starting analysis.' }, { status: 400 });
+  }
+  if (input.text.length > MAX_INPUT_CHARS) {
     return Response.json(
       { error: `Bill text is too long. Limit is ${MAX_INPUT_CHARS} characters.` },
       { status: 400 },
     );
   }
 
-  const billText = text;
-
+  const { text: billText, billType } = input;
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       const writer = new NdjsonWriter(controller);
@@ -239,34 +261,37 @@ export async function POST(request: Request): Promise<Response> {
       }, OVERALL_DEADLINE_MS);
 
       try {
+        const isPreparedDemo = fallbackIsAllowed(billText, billType);
         if (isSafeModeEnabled()) {
-          runFallbackPipeline(writer, 'Safe mode is enabled; no model calls were made.');
+          if (isPreparedDemo) {
+            runFallbackPipeline(writer, 'Safe mode is enabled; no model calls were made.');
+          } else {
+            writer.stage('extract', 'failed', 'Safe mode only supports the prepared phone demo bill.');
+            writer.send({
+              type: 'error',
+              message: 'Safe mode cannot analyze this document.',
+              recoverable: true,
+            });
+            writer.complete('partial');
+          }
         } else if (!hasOpenAiCredentials()) {
-          if (fallbackIsAllowed(billText)) {
-            runFallbackPipeline(
-              writer,
-              'No model credentials configured; using verified demo fallback.',
-            );
+          if (isPreparedDemo) {
+            runFallbackPipeline(writer, 'No model credentials configured; using verified demo fallback.');
           } else {
             writer.stage('extract', 'failed', 'No model credentials are configured.');
             writer.send({
               type: 'error',
-              message:
-                'Live analysis is not configured. Load the prepared demo bill to see the verified fallback.',
+              message: 'Live analysis is not configured for this document.',
               recoverable: true,
             });
             writer.complete('partial');
           }
         } else {
-          await runLivePipeline(writer, billText);
+          await runLivePipeline(writer, billText, billType, isPreparedDemo);
         }
       } catch (error) {
         logStageFailure('pipeline', error);
-        writer.send({
-          type: 'error',
-          message: 'Analysis stopped unexpectedly.',
-          recoverable: false,
-        });
+        writer.send({ type: 'error', message: 'Analysis stopped unexpectedly.', recoverable: false });
         writer.complete('partial');
       } finally {
         clearTimeout(overallTimer);

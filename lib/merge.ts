@@ -1,5 +1,11 @@
-import { formatUsd, type TrendAnalysis } from './billMath';
-import type { AnalysisMode, Finding, FindingSource } from './types';
+import { baselineLabel, formatUsd, presentTrend, type TrendAnalysis } from './billMath';
+import type {
+  AnalysisMode,
+  BillType,
+  CarrierComparison,
+  Finding,
+  FindingSource,
+} from './types';
 
 const SEVERITY_RANK: Record<Finding['severity'], number> = { warning: 0, info: 1 };
 const SOURCE_RANK: Record<FindingSource, number> = { trend: 0, anomaly: 1, market: 2, plain: 3 };
@@ -9,14 +15,9 @@ function dedupeKey(finding: Finding): string {
   return `${finding.source}::${finding.evidence.replace(/\s+/gu, ' ').trim().toLowerCase()}`;
 }
 
-/**
- * Requirement 4.5: findings are merged and sorted locally, with no synthesis model call.
- * Sort order is severity first, then source (deterministic trend finding leads).
- */
 export function mergeFindings(groups: readonly Finding[][]): Finding[] {
   const seen = new Set<string>();
   const merged: Finding[] = [];
-
   for (const group of groups) {
     for (const finding of group) {
       const key = dedupeKey(finding);
@@ -25,12 +26,10 @@ export function mergeFindings(groups: readonly Finding[][]): Finding[] {
       merged.push(finding);
     }
   }
-
   return [...merged]
     .sort((a, b) => {
-      const bySeverity = SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity];
-      if (bySeverity !== 0) return bySeverity;
-      return SOURCE_RANK[a.source] - SOURCE_RANK[b.source];
+      const severity = SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity];
+      return severity !== 0 ? severity : SOURCE_RANK[a.source] - SOURCE_RANK[b.source];
     })
     .slice(0, MAX_MERGED_FINDINGS);
 }
@@ -39,49 +38,60 @@ export interface BriefingInput {
   accountHolderFirstName: string;
   vendor: string | null;
   analysis: TrendAnalysis;
-  findings: readonly Finding[];
   mode: AnalysisMode;
+  billType: BillType;
+  comparisons: readonly CarrierComparison[];
+  isPreparedDemo?: boolean;
 }
 
-/**
- * Requirement 4.7: the English voice briefing is generated locally from normalized
- * findings. Wording stays conditional (Requirement 8.5 / 8.6).
- */
+function historySentence(analysis: TrendAnalysis): string {
+  if (analysis.baselinePointCount === 0) {
+    return 'The document does not provide enough monthly history to calculate a baseline.';
+  }
+  const presentation = presentTrend(analysis);
+  const direction = analysis.trendDirection === 'flat'
+    ? presentation.comparison
+    : analysis.currentVsAveragePercent === null
+      ? presentation.comparison
+      : `${presentation.comparison}, about ${Math.abs(
+          analysis.currentVsAveragePercent,
+        )} percent ${analysis.trendDirection === 'decrease' ? 'below' : 'above'}`;
+  return `The document's ${analysis.trend.length}-month history is ${analysis.trend
+    .map((point) => `${point.label} ${formatUsd(point.amount)}`)
+    .join(', ')}. The ${baselineLabel(analysis.baselinePointCount)} is ${formatUsd(
+      analysis.baselineAverage ?? 0,
+    )}, and ${direction}.`;
+}
+
 export function buildBriefing(input: BriefingInput): string {
-  const { accountHolderFirstName, vendor, analysis, findings } = input;
-  const vendorName = vendor ?? 'your mobile carrier';
-  const charges = analysis.questionedCharges;
-
-  const chargeSentence =
-    charges.length > 0
-      ? `Two charges stand out: ${charges
-          .map((charge) => `${charge.label} at ${formatUsd(charge.amount)} a month`)
-          .join(', and ')}.`
-      : 'No individual added charges were identified on this statement.';
-
-  const topFindings = findings
-    .slice(0, 3)
-    .map((finding, index) => `${index + 1}. ${finding.title}. ${finding.explanation}`)
-    .join(' ');
-
-  const modeNote =
-    input.mode === 'fallback'
-      ? ' This summary comes from RafiqAI\'s verified demonstration data rather than a live analysis.'
-      : '';
+  const { accountHolderFirstName, analysis, billType, comparisons } = input;
+  const isPreparedDemo = input.isPreparedDemo === true;
+  const provider = input.vendor ?? (billType === 'phone' ? 'your carrier' : 'your provider');
+  const chargeSentence = isPreparedDemo && billType === 'phone' && analysis.potentialMonthlyImpact > 0
+    ? `The prepared demo has charges worth questioning with a potential impact of up to ${formatUsd(
+        analysis.potentialMonthlyImpact,
+      )} monthly or ${formatUsd(analysis.potentialAnnualImpact)} yearly if removable.`
+    : 'No potential-savings estimate is calculated for this bill.';
+  const comparisonSentence = isPreparedDemo && billType === 'phone' && comparisons.length > 0
+    ? `For cautious context only, invented demo comparisons are ${comparisons
+        .map(
+          (row) =>
+            `${row.carrier} at ${formatUsd(row.monthlyPrice)}, a potential monthly difference of ${formatUsd(row.potentialMonthlySavings)}`,
+        )
+        .join(', ')}. These are synthetic examples, not live quotes or guaranteed savings, and features, taxes, eligibility, and actual prices may differ.`
+    : '';
+  const modeNote = input.mode === 'fallback'
+    ? "This summary uses RafiqAI's verified prepared-fixture data rather than live model output."
+    : '';
 
   return [
-    `Hello ${accountHolderFirstName}, this is RafiqAI calling about your ${vendorName} bill.`,
-    `Your monthly total went from ${formatUsd(analysis.trend[0]?.amount ?? 0)} to ${formatUsd(
-      analysis.trend[analysis.trend.length - 1]?.amount ?? 0,
-    )}, an increase of about ${analysis.increasePercent} percent.`,
+    `Hello ${accountHolderFirstName}, this is RafiqAI calling about your ${provider} bill.`,
+    historySentence(analysis),
     chargeSentence,
-    `Together they add up to ${formatUsd(analysis.potentialMonthlyImpact)} a month, or up to ${formatUsd(
-      analysis.potentialAnnualImpact,
-    )} a year.`,
-    'These are charges worth questioning. They are not confirmed errors, and removing them is not guaranteed.',
-    topFindings,
-    `The safest next step is to call ${vendorName} using the number printed on your statement, ask what each charge is for, and ask whether the device protection add-on is optional.`,
-    'I can answer questions about anything on this bill.',
+    comparisonSentence,
+    'These observations are worth checking, not confirmed errors, and any removal, refund, or savings is not guaranteed.',
+    `Use the official contact details on the statement to ask ${provider} for a written explanation.`,
+    'I can answer questions about the information shown on this bill.',
     modeNote,
   ]
     .filter((part) => part.trim().length > 0)
@@ -95,14 +105,7 @@ export function firstName(accountHolder: string | null): string {
   return name && name.length > 0 ? name : 'there';
 }
 
-/**
- * Requirement 7.7 / design: `live` only when every stage succeeded, `fallback` when
- * verified fixture output was used, otherwise `partial`.
- */
-export function resolveMode(options: {
-  usedFallback: boolean;
-  failedStages: number;
-}): AnalysisMode {
+export function resolveMode(options: { usedFallback: boolean; failedStages: number }): AnalysisMode {
   if (options.usedFallback) return 'fallback';
   return options.failedStages > 0 ? 'partial' : 'live';
 }
